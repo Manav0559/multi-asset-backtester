@@ -13,6 +13,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -31,6 +32,10 @@ class Order(Base):
     __table_args__ = (
         CheckConstraint("qty > 0", name="qty_positive"),
         Index("ix_orders_portfolio_created", "portfolio_id", "created_at"),
+        # Exactly-once under retries. NULL keys never dedupe (Postgres treats
+        # NULLs as distinct), so non-idempotent callers are unaffected.
+        UniqueConstraint("portfolio_id", "idempotency_key",
+                         name="uq_orders_portfolio_idempotency"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -54,6 +59,8 @@ class Order(Base):
     )
     qty: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False)  # fractional for crypto
     limit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    # Client-supplied dedup key; reused across retries of the same intent.
+    idempotency_key: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[OrderStatus] = mapped_column(
         Enum(OrderStatus, name="order_status", values_callable=lambda e: [m.value for m in e]),
         nullable=False,
