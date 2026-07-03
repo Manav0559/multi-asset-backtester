@@ -8,24 +8,33 @@ import {
 } from "recharts";
 import Guard from "@/components/Guard";
 import { api } from "@/lib/api";
+import { Asset, MARKETS, MarketKey, assetsOfMarket } from "@/lib/assets";
 import { macd, rsi, sma } from "@/lib/indicators";
-
-type Asset = { id: number; symbol: string; exchange: string; asset_class: string };
 // Named PriceBar to avoid clashing with recharts' <Bar> chart primitive.
 type PriceBar = { time: string; open: number; high: number; low: number; close: number; volume: number };
 
 function DashboardInner() {
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [market, setMarket] = useState<MarketKey>("nasdaq");
   const [selected, setSelected] = useState<number | null>(null);
   const [bars, setBars] = useState<PriceBar[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const marketAssets = useMemo(() => assetsOfMarket(assets, market), [assets, market]);
+
   useEffect(() => {
     api<Asset[]>("/assets").then((a) => {
       setAssets(a);
-      if (a.length) setSelected(a[0].id);
+      const first = assetsOfMarket(a, "nasdaq")[0] ?? a[0];
+      if (first) setSelected(first.id);
     });
   }, []);
+
+  function switchMarket(m: MarketKey) {
+    setMarket(m);
+    const first = assetsOfMarket(assets, m)[0];
+    if (first) setSelected(first.id);
+  }
 
   useEffect(() => {
     if (selected == null) return;
@@ -59,26 +68,56 @@ function DashboardInner() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">Live Dashboard</h1>
           <p className="text-sm text-muted">Historical & real-time multi-asset prices with indicators</p>
         </div>
-        <div className="flex items-center gap-3">
-          <select className="input w-56" value={selected ?? ""}
-            onChange={(e) => setSelected(Number(e.target.value))}>
-            {assets.length === 0 && <option>No assets — run a backfill</option>}
-            {assets.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.symbol} · {a.exchange}
-              </option>
-            ))}
-          </select>
+        {/* Market tabs: NASDAQ-100 / NIFTY 50 / Crypto */}
+        <div className="segmented">
+          {MARKETS.map((m) => {
+            const n = assetsOfMarket(assets, m.key).length;
+            return (
+              <button key={m.key} onClick={() => switchMarket(m.key)}
+                className={`px-4 py-2 text-xs transition-all active:scale-95 ${
+                  market === m.key ? "bg-accent/20 text-accent shadow-glow-sm"
+                                   : "text-muted hover:text-slate-200"}`}>
+                <span className="font-medium">{m.label}</span>
+                <span className="ml-1.5 opacity-60">{n}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Every instrument of the active market — click to preview, open for the
+          full interactive chart. */}
+      <div className="card p-4">
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-xs text-muted">
+            {MARKETS.find((m) => m.key === market)!.label} ·{" "}
+            {MARKETS.find((m) => m.key === market)!.sub} · {marketAssets.length} instruments
+          </p>
           {selected != null && (
-            <Link href={`/assets/${selected}`}
-              className="btn-primary whitespace-nowrap text-sm">
-              Full chart →
+            <Link href={`/assets/${selected}`} className="btn-primary !py-1.5 text-xs">
+              Open full chart: {assets.find((a) => a.id === selected)?.symbol} →
             </Link>
+          )}
+        </div>
+        <div className="max-h-44 overflow-y-auto flex flex-wrap gap-1.5">
+          {marketAssets.map((a) => (
+            <button key={a.id} onClick={() => setSelected(a.id)}
+              className={`px-2.5 py-1 rounded-lg font-mono text-xs transition-all active:scale-95 ${
+                selected === a.id
+                  ? "bg-accent/20 text-accent border border-accent/40 shadow-glow-sm"
+                  : "bg-white/[0.04] border border-white/[0.08] text-slate-300 hover:border-accent/30 hover:text-slate-100"}`}>
+              {a.symbol}
+            </button>
+          ))}
+          {marketAssets.length === 0 && (
+            <p className="text-muted text-sm py-4">
+              No instruments yet — run <span className="font-mono">scripts/backfill_universe.py</span>.
+            </p>
           )}
         </div>
       </div>

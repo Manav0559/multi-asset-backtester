@@ -12,6 +12,10 @@ services:
   db:
     image: timescale/timescaledb:latest-pg16
     container_name: backtester-db
+    # Hypertable bulk upserts lock one entry PER CHUNK: a 5y daily backfill
+    # touches ~1250 day-chunks in one INSERT and exhausts the default lock
+    # table (max_locks_per_transaction=64 -> "out of shared memory").
+    command: ["postgres", "-c", "max_locks_per_transaction=1024"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres

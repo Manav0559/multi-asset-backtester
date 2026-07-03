@@ -179,10 +179,19 @@ function AssetPageInner() {
           <p className="text-down text-xs">Indicator error: {String(indicatorError.message ?? indicatorError)}</p>
         )}
 
-        {bars && bars.length > 0 ? (
-          <AssetChart bars={bars} mode={mode} indicators={overlays} />
-        ) : (
+        {bars === undefined ? (
           <div className="skeleton h-[480px]" />
+        ) : bars.length === 0 ? (
+          <div className="h-[480px] flex flex-col items-center justify-center gap-2 text-center">
+            <span className="text-3xl opacity-40">◈</span>
+            <p className="text-sm text-slate-300">No {timeframe} bars for {asset?.symbol ?? "this asset"}</p>
+            <p className="text-xs text-muted max-w-sm">
+              Intraday history is backfilled for crypto and a core set of megacaps —
+              try 1D, or run <span className="font-mono">scripts/backfill_universe.py</span> to extend coverage.
+            </p>
+          </div>
+        ) : (
+          <AssetChart bars={bars} mode={mode} indicators={overlays} />
         )}
       </div>
     </div>
