@@ -62,3 +62,11 @@ class BacktestStatus(str, enum.Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class ChallengeStatus(str, enum.Enum):
+    PENDING = "pending"      # proposed, opponent hasn't responded
+    ACTIVE = "active"        # both consented, running to end_at
+    DECLINED = "declined"    # opponent declined
+    CANCELLED = "cancelled"  # challenger withdrew while pending
+    FINISHED = "finished"    # ran to completion, metrics frozen

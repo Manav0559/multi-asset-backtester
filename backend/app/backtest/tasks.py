@@ -62,6 +62,11 @@ celery_app.conf.beat_schedule = {
         "task": "backtest.reap_dead",
         "schedule": 60.0,
     },
+    # Close expired head-to-head competitions and freeze their final metrics.
+    "finish-expired-challenges": {
+        "task": "challenges.finish_expired",
+        "schedule": 60.0,
+    },
 }
 
 
@@ -155,6 +160,18 @@ def reap_dead_backtests_task() -> dict:
     if n:
         logger.warning("reaper healed %d orphaned backtest(s)", n)
     return {"reaped": n}
+
+
+@celery_app.task(name="challenges.finish_expired")
+def finish_expired_challenges_task() -> dict:
+    from app.db.session import SessionLocal
+    from app.services.challenges import finish_expired
+
+    with SessionLocal() as db:
+        n = finish_expired(db)
+    if n:
+        logger.info("finished %d expired challenge(s)", n)
+    return {"finished": n}
 
 
 @celery_app.task(name="backtest.run", bind=True, max_retries=0)
