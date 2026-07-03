@@ -57,6 +57,23 @@ class AcceptInvite(BaseModel):
     token: str
 
 
+class PortfolioRename(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+
+
+class PendingInviteOut(BaseModel):
+    """An invite the current user can act on, enriched for the bell menu."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    portfolio_id: uuid.UUID
+    portfolio_name: str
+    inviter_username: str
+    role: PortfolioRole
+    token: str
+    expires_at: datetime
+
+
 class PositionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

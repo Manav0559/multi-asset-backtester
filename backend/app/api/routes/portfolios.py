@@ -30,8 +30,10 @@ from app.schemas.portfolio import (
     InviteOut,
     LedgerEntryOut,
     MemberOut,
+    PendingInviteOut,
     PortfolioCreate,
     PortfolioOut,
+    PortfolioRename,
     PositionOut,
 )
 from app.services.equity import EquityPoint, equity_histories
@@ -81,6 +83,26 @@ def get_portfolio(portfolio_id: uuid.UUID,
                   member: PortfolioMember = Depends(require_portfolio_role(PortfolioRole.VIEWER)),
                   db: Session = Depends(get_db)) -> Portfolio:
     return db.get(Portfolio, portfolio_id)
+
+
+@router.patch("/{portfolio_id}", response_model=PortfolioOut)
+def rename_portfolio(portfolio_id: uuid.UUID, body: PortfolioRename,
+                     member: PortfolioMember = Depends(require_portfolio_role(PortfolioRole.OWNER)),
+                     db: Session = Depends(get_db)) -> Portfolio:
+    pf = db.get(Portfolio, portfolio_id)
+    pf.name = body.name
+    db.commit()
+    db.refresh(pf)
+    return pf
+
+
+@router.delete("/{portfolio_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_portfolio(portfolio_id: uuid.UUID,
+                     member: PortfolioMember = Depends(require_portfolio_role(PortfolioRole.OWNER)),
+                     db: Session = Depends(get_db)) -> None:
+    # FK cascades remove members/orders/trades/ledger/positions/snapshots.
+    db.delete(db.get(Portfolio, portfolio_id))
+    db.commit()
 
 
 @router.get("/{portfolio_id}/members", response_model=list[MemberOut])
@@ -137,6 +159,41 @@ def create_invite(portfolio_id: uuid.UUID, body: InviteCreate,
     db.commit()
     db.refresh(invite)
     return invite
+
+
+@router.get("/invites/pending", response_model=list[PendingInviteOut])
+def list_pending_invites(user: User = Depends(get_current_user),
+                         db: Session = Depends(get_db)) -> list[PendingInviteOut]:
+    """Invites the current user can act on (their email, still pending & valid)."""
+    rows = db.execute(
+        select(PortfolioInvite, Portfolio.name, User.username)
+        .join(Portfolio, Portfolio.id == PortfolioInvite.portfolio_id)
+        .join(User, User.id == PortfolioInvite.inviter_id)
+        .where(PortfolioInvite.invitee_email == user.email.lower(),
+               PortfolioInvite.status == InviteStatus.PENDING,
+               PortfolioInvite.expires_at > datetime.now(timezone.utc))
+        .order_by(PortfolioInvite.created_at.desc())
+    ).all()
+    return [PendingInviteOut(
+        id=inv.id, portfolio_id=inv.portfolio_id, portfolio_name=pname,
+        inviter_username=uname, role=inv.role, token=inv.token,
+        expires_at=inv.expires_at,
+    ) for inv, pname, uname in rows]
+
+
+@router.post("/invites/decline", status_code=status.HTTP_204_NO_CONTENT)
+def decline_invite(body: AcceptInvite, user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)) -> None:
+    invite = db.scalar(select(PortfolioInvite).where(PortfolioInvite.token == body.token))
+    if invite is None or invite.status != InviteStatus.PENDING:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Invite not found or already used")
+    if invite.invitee_email != user.email.lower():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Invite was issued to a different email")
+    invite.status = InviteStatus.DECLINED
+    invite.responded_at = datetime.now(timezone.utc)
+    db.commit()
 
 
 @router.post("/invites/accept", response_model=MemberOut)
