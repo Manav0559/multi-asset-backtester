@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -82,6 +83,18 @@ def _commission(notional: Decimal) -> Decimal:
     return (notional * bps).quantize(_CENTS, rounding=ROUND_HALF_UP)
 
 
+def _result_from_existing(db: Session, order: Order, portfolio: Portfolio) -> ExecutionResult:
+    """Reconstruct the original outcome of an already-processed order so a
+    retry with the same idempotency key gets an identical response."""
+    if order.status == OrderStatus.FILLED:
+        trade = db.execute(select(Trade).where(Trade.order_id == order.id)).scalar_one()
+        return ExecutionResult(order.id, OrderStatus.FILLED, None,
+                               trade.fill_price, trade.qty,
+                               portfolio.cash_balance, portfolio.version)
+    return ExecutionResult(order.id, order.status, order.reject_reason, None, None,
+                           portfolio.cash_balance, portfolio.version)
+
+
 def execute_market_order(
     db: Session,
     *,
@@ -90,8 +103,15 @@ def execute_market_order(
     asset_id: int,
     side: OrderSide,
     qty: Decimal,
+    idempotency_key: str | None = None,
 ) -> ExecutionResult:
-    """Execute one market order atomically. Manages its own transaction."""
+    """Execute one market order atomically. Manages its own transaction.
+
+    Idempotency: a retry carrying the same `idempotency_key` returns the
+    original order's outcome without executing again. The pre-check runs
+    INSIDE the portfolio row lock, so same-portfolio retries serialize and
+    see the prior insert; the unique constraint is the backstop for a request
+    that slips past the check on a separate connection."""
     if qty <= 0:
         raise ExecutionError("qty must be positive")
 
@@ -101,6 +121,15 @@ def execute_market_order(
     ).scalar_one_or_none()
     if portfolio is None:
         raise ExecutionError("portfolio not found")
+
+    # (1b) Idempotency fast path: same key already processed on this portfolio.
+    if idempotency_key is not None:
+        prior = db.execute(
+            select(Order).where(Order.portfolio_id == portfolio_id,
+                                Order.idempotency_key == idempotency_key)
+        ).scalar_one_or_none()
+        if prior is not None:
+            return _result_from_existing(db, prior, portfolio)
 
     price = latest_price(db, asset_id)
     if price is None:
@@ -116,11 +145,26 @@ def execute_market_order(
             portfolio_id=portfolio_id, user_id=user_id, asset_id=asset_id,
             side=side, order_type=OrderType.MARKET, qty=qty,
             status=OrderStatus.REJECTED, reject_reason=reason,
+            idempotency_key=idempotency_key,
         )
         db.add(order)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:  # concurrent retry won the race — return its outcome
+            db.rollback()
+            return _replay_prior()
         return ExecutionResult(order.id, OrderStatus.REJECTED, reason, None, None,
                                portfolio.cash_balance, portfolio.version)
+
+    def _replay_prior() -> ExecutionResult:
+        """After a unique-violation rollback, re-read the winning order (fresh
+        transaction) and return its outcome. Only reachable with a key set."""
+        pf = db.execute(select(Portfolio).where(Portfolio.id == portfolio_id)).scalar_one()
+        prior = db.execute(
+            select(Order).where(Order.portfolio_id == portfolio_id,
+                                Order.idempotency_key == idempotency_key)
+        ).scalar_one()
+        return _result_from_existing(db, prior, pf)
 
     # (2) Validate against the LOCKED state.
     if side == OrderSide.BUY:
@@ -138,7 +182,7 @@ def execute_market_order(
     order = Order(
         portfolio_id=portfolio_id, user_id=user_id, asset_id=asset_id,
         side=side, order_type=OrderType.MARKET, qty=qty,
-        status=OrderStatus.FILLED,
+        status=OrderStatus.FILLED, idempotency_key=idempotency_key,
     )
     db.add(order)
     db.flush()  # need order.id for the trade FK

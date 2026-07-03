@@ -29,6 +29,7 @@ def place_order(portfolio_id: uuid.UUID, body: OrderCreate,
         result = execute_market_order(
             db, portfolio_id=portfolio_id, user_id=member.user_id,
             asset_id=body.asset_id, side=body.side, qty=body.qty,
+            idempotency_key=body.idempotency_key,
         )
     except ExecutionError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

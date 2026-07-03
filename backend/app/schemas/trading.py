@@ -11,6 +11,10 @@ class OrderCreate(BaseModel):
     asset_id: int
     side: OrderSide
     qty: Decimal = Field(gt=0)
+    # Client-generated at confirm time, reused on every retry of the same
+    # intent (incl. the transparent retry after a 401 refresh). Optional:
+    # omitting it keeps the old non-idempotent behavior.
+    idempotency_key: str | None = Field(default=None, max_length=64)
 
 
 class OrderResult(BaseModel):
