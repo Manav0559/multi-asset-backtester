@@ -3,6 +3,7 @@
 from app.db.base import Base
 from app.models.asset import Asset
 from app.models.backtest import Backtest, BacktestYearlyResult
+from app.models.challenge import Challenge
 from app.models.market_data import OhlcvBar
 from app.models.portfolio import Portfolio, PortfolioInvite, PortfolioMember
 from app.models.snapshot import PortfolioEquitySnapshot
@@ -15,6 +16,7 @@ __all__ = [
     "Asset",
     "Backtest",
     "BacktestYearlyResult",
+    "Challenge",
     "OhlcvBar",
     "Portfolio",
     "PortfolioEquitySnapshot",
