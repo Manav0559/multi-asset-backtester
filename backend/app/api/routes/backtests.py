@@ -1,0 +1,149 @@
+"""Strategy + backtest routes.
+
+Flow: create a Strategy (-> auto v1 StrategyVersion) -> submit a Backtest
+(queued row + dispatched Celery task) -> poll the backtest + its yearly
+breakdown. Built-in strategies need no code; the `strategy` key in the
+backtest config selects the engine strategy.
+"""
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_current_user
+from app.db.session import get_db
+from app.models import (
+    Backtest,
+    BacktestYearlyResult,
+    Strategy,
+    StrategyVersion,
+    User,
+)
+from app.models.enums import BacktestStatus
+from app.schemas.backtest import (
+    BacktestCreate,
+    BacktestOut,
+    StrategyCreate,
+    YearlyResultOut,
+)
+
+router = APIRouter(tags=["backtests"])
+
+
+@router.get("/strategies/registry")
+def strategy_registry(user: User = Depends(get_current_user)) -> dict:
+    """Every runnable strategy (built-in + classic + BYOC), with kind,
+    category, and default params — the frontend renders its strategy picker
+    and param forms from this, never from a hardcoded list."""
+    from app.backtest.registry import STRATEGY_REGISTRY
+    from app.backtest.sandbox import DEFAULT_TEMPLATE
+
+    catalog = STRATEGY_REGISTRY.catalog()
+    catalog.append({"key": "custom_code", "kind": "single", "category": "custom",
+                    "description": "Your own Python strategy (BYOC sandbox)",
+                    "defaults": {}})
+    return {"strategies": catalog, "custom_template": DEFAULT_TEMPLATE}
+
+
+@router.post("/strategies/validate")
+def validate_custom_code(body: dict, user: User = Depends(get_current_user)) -> dict:
+    """Static-check BYOC code without running it — powers the editor's
+    'Validate' button. Instantiation errors count too (bad params, no class)."""
+    from app.backtest.sandbox import SandboxError, build_custom_strategy
+
+    try:
+        strategy = build_custom_strategy(body.get("code", ""), body.get("params"))
+    except SandboxError as exc:
+        return {"ok": False, "errors": str(exc).split("; ")}
+    return {"ok": True, "errors": [], "class_name": type(strategy).__name__}
+
+
+@router.post("/strategies", status_code=status.HTTP_201_CREATED)
+def create_strategy(body: StrategyCreate, user: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)) -> dict:
+    strat = Strategy(user_id=user.id, name=body.name)
+    db.add(strat)
+    db.flush()
+    version = StrategyVersion(strategy_id=strat.id, version=1,
+                             code=body.code, params=body.params)
+    db.add(version)
+    db.commit()
+    return {"strategy_id": str(strat.id), "version_id": str(version.id), "version": 1}
+
+
+@router.post("/backtests", response_model=BacktestOut, status_code=status.HTTP_202_ACCEPTED)
+def submit_backtest(body: BacktestCreate, user: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)) -> Backtest:
+    # Ownership check: the strategy version must belong to this user.
+    sv = db.get(StrategyVersion, body.strategy_version_id)
+    if sv is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "strategy version not found")
+    owner_id = db.scalar(select(Strategy.user_id).where(Strategy.id == sv.strategy_id))
+    if owner_id != user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "not your strategy")
+
+    if body.asset_id is None and not body.asset_ids:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "provide asset_id (single) or asset_ids (multi-asset)")
+    if body.strategy == "custom_code":
+        # Fail fast at submission: reject code the sandbox would refuse anyway,
+        # so the user gets a 422 with line numbers instead of a failed run.
+        from app.backtest.sandbox import SandboxError, build_custom_strategy
+        try:
+            build_custom_strategy(body.code or "", body.params)
+        except SandboxError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                f"custom strategy rejected: {exc}") from exc
+    config = {
+        "asset_id": body.asset_id, "asset_ids": body.asset_ids,
+        "timeframe": body.timeframe,
+        "strategy": body.strategy, "params": body.params or {},
+        "code": body.code,
+        "start": body.start, "end": body.end,
+        "initial_capital": body.initial_capital,
+        "commission_bps": body.commission_bps, "n_trials": body.n_trials,
+        "borrow_bps_annual": body.borrow_bps_annual,
+        "max_gross_leverage": body.max_gross_leverage,
+    }
+    bt = Backtest(user_id=user.id, strategy_version_id=sv.id,
+                  status=BacktestStatus.QUEUED, config=config)
+    db.add(bt)
+    db.commit()
+    db.refresh(bt)
+
+    # Dispatch to the Celery worker (import here to avoid loading Celery on
+    # every request path / in the web process import graph).
+    from app.backtest.tasks import run_backtest_task
+    run_backtest_task.delay(str(bt.id))
+    return bt
+
+
+@router.get("/backtests", response_model=list[BacktestOut])
+def list_backtests(user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)) -> list[Backtest]:
+    return db.scalars(
+        select(Backtest).where(Backtest.user_id == user.id)
+        .order_by(Backtest.created_at.desc()).limit(100)
+    ).all()
+
+
+@router.get("/backtests/{backtest_id}", response_model=BacktestOut)
+def get_backtest(backtest_id: uuid.UUID, user: User = Depends(get_current_user),
+                 db: Session = Depends(get_db)) -> Backtest:
+    bt = db.get(Backtest, backtest_id)
+    if bt is None or bt.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "backtest not found")
+    return bt
+
+
+@router.get("/backtests/{backtest_id}/yearly", response_model=list[YearlyResultOut])
+def get_yearly(backtest_id: uuid.UUID, user: User = Depends(get_current_user),
+               db: Session = Depends(get_db)) -> list[BacktestYearlyResult]:
+    bt = db.get(Backtest, backtest_id)
+    if bt is None or bt.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "backtest not found")
+    return db.scalars(
+        select(BacktestYearlyResult).where(BacktestYearlyResult.backtest_id == backtest_id)
+        .order_by(BacktestYearlyResult.year.asc())
+    ).all()

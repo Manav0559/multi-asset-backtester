@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Env / secrets
+.env
+!.env.example
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Node (frontend, later phases)
+node_modules/
+.next/
+
+# Data / artifacts
+*.joblib
+*.parquet
+
+# Test / tool caches
+.pytest_cache/
+*.log
+
+# Local Claude Code tool state (machine-specific)
+.claude/
+
+# macOS Finder "keep both" duplicates
+* 2.*

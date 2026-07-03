@@ -1,0 +1,25 @@
+# Scrape config for the compose --profile app stack. Each process is scraped
+# independently (standard multi-process pattern — no pushgateway):
+#   backend :8000/metrics — HTTP rate/latency by route template + leaderboard query time
+#   worker  :9200/metrics — backtest durations (multiprocess-merged, see tasks.py)
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:8000"]
+
+  - job_name: worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["worker:9200"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

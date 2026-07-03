@@ -1,0 +1,60 @@
+# Alerting rules for the Backtester stack. Thresholds are tuned for the demo
+# deployment — a real deployment would route these through Alertmanager; here
+# they surface on the Grafana dashboard's "Alerts" row (via the ALERTS metric).
+groups:
+  - name: backtester-api
+    rules:
+      - alert: APIHighErrorRate
+        # >5% of requests 5xx over 5m. The `or vector(0)` guard is not needed:
+        # no traffic -> no series -> no alert, which is the desired behavior.
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "API 5xx rate above 5%"
+          description: "{{ $value | humanizePercentage }} of requests are failing."
+
+      - alert: APIHighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le) (rate(http_request_duration_seconds_bucket[5m]))) > 1
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: "API p99 latency above 1s"
+          description: "p99 is {{ $value | humanizeDuration }} over the last 5m window."
+
+  - name: backtester-worker
+    rules:
+      - alert: BacktestFailureRatio
+        # >20% of backtests failing over 30m, and at least one actually failed
+        # (the ratio alone would fire on 0/0 noise if buckets are sparse).
+        expr: |
+          sum(increase(backtest_duration_seconds_count{status="failed"}[30m]))
+            / sum(increase(backtest_duration_seconds_count[30m])) > 0.2
+          and sum(increase(backtest_duration_seconds_count{status="failed"}[30m])) > 0
+        for: 5m
+        labels:
+          severity: warn
+        annotations:
+          summary: "More than 20% of backtests are failing"
+          description: "Check worker logs — likely a bad deploy or a data gap."
+
+      - alert: EquitySnapshotStale
+        # Beat writes every 5m; 15m of silence = 3 missed ticks. Two branches:
+        # the gauge exists but is old, or the worker restarted and never set it.
+        expr: |
+          (time() - max(equity_snapshot_last_success_timestamp_seconds)) > 900
+            or absent(equity_snapshot_last_success_timestamp_seconds)
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Equity snapshots have stopped"
+          description: >-
+            No successful snapshot beat tick for 15+ minutes — windowed
+            leaderboards are drifting. Check the worker (-B) container.
