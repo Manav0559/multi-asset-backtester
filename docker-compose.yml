@@ -1,0 +1,199 @@
+# Full-stack compose.
+#
+#   docker compose up -d                 → infra only (db + redis) — the cheap dev
+#                                          loop; run backend/worker/frontend locally.
+#   docker compose --profile app up -d --build
+#                                        → the whole platform (db, redis, migrate,
+#                                          backend, worker, frontend).
+#
+# db/redis keep host ports 5433/6380 so the local dev workflow is unchanged;
+# inside the compose network services talk over the default 5432/6379.
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: backtester-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: backtester
+    ports:
+      - "5433:5432"
+    volumes:
+      - backtester_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d backtester"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: backtester-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - backtester_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: bring the schema to head, then exit 0. Everything app-tier waits on
+  # its successful completion so no service races an unmigrated DB.
+  migrate:
+    profiles: ["app"]
+    build:
+      context: ./backend
+    image: backtester-backend
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/backtester
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    profiles: ["app"]
+    build:
+      context: ./backend
+    image: backtester-backend
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/backtester
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      # Override in a real deployment — this is a dev default only.
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-in-production-0123456789}
+    ports:
+      # Overridable so the containerized stack can coexist with a local dev
+      # backend already holding 8000.
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  worker:
+    profiles: ["app"]
+    build:
+      context: ./backend
+    image: backtester-backend
+    # -B embeds the beat scheduler (periodic equity snapshots for the windowed
+    # leaderboard) — safe with a single worker replica.
+    command: ["celery", "-A", "app.backtest.tasks:celery_app", "worker", "-B",
+              "--loglevel=info", "--concurrency=2"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/backtester
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      # Prefork children write metric values to mmap files here; the parent's
+      # exposition endpoint merges them (see tasks._start_metrics_server).
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
+    ports:
+      # Worker's own Prometheus exposition (separate process from the web app).
+      - "${WORKER_METRICS_PORT:-9200}:9200"
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL",
+             "celery -A app.backtest.tasks:celery_app inspect ping -t 5 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    profiles: ["app"]
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: backtester-frontend
+    environment:
+      # Server-side /api rewrite target (same compose network). NOTE: also baked
+      # into the image at build time (see frontend/Dockerfile ARG BACKEND_URL).
+      BACKEND_URL: http://backend:8000
+    ports:
+      # Overridable: 3000 is often held by another local dev server.
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      # 127.0.0.1, not localhost: busybox wget resolves localhost to ::1 first
+      # and Node's standalone server binds IPv4 only.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  prometheus:
+    profiles: ["app"]
+    image: prom/prometheus:v2.53.0
+    container_name: backtester-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - backtester_promdata:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9090/-/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    profiles: ["app"]
+    image: grafana/grafana:11.1.0
+    container_name: backtester-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      # Dev default only — override in a real deployment.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - backtester_grafanadata:/var/lib/grafana
+    ports:
+      # 3000 is the frontend; Grafana takes 3001 by default.
+      - "${GRAFANA_PORT:-3001}:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  backtester_pgdata:
+  backtester_redisdata:
+  backtester_promdata:
+  backtester_grafanadata:

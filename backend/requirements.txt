@@ -1,0 +1,36 @@
+# Phase 1, Step 1: schema + migrations. Streaming/backtest deps land in later steps.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sqlalchemy>=2.0
+alembic>=1.13
+psycopg2-binary>=2.9
+pydantic-settings>=2.3
+python-dotenv>=1.0
+
+# Auth
+pyjwt>=2.8
+bcrypt>=4.1
+email-validator>=2.1
+
+# Streaming
+redis>=5.0
+websockets>=12.0
+yfinance>=0.2.40
+
+# Backtesting
+pandas>=2.2
+numpy>=1.26
+scipy>=1.13
+celery>=5.4
+requests>=2.31
+
+# Phase 2 — ML strategies
+scikit-learn>=1.4
+xgboost>=2.0
+
+
+# Phase 3 — observability
+prometheus-client>=0.20
+
+# Indicator engine (150+ TA indicators via IndicatorService)
+pandas-ta>=0.4.71b0

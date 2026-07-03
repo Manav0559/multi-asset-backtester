@@ -1,0 +1,154 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-bg text-slate-200 antialiased;
+  font-feature-settings: "tnum";
+  /* Liquid-glass ambience: layered radial glows the frosted panels refract. */
+  background-image:
+    radial-gradient(48rem 30rem at 12% -8%, rgba(34, 211, 238, 0.09), transparent 60%),
+    radial-gradient(40rem 28rem at 88% 8%, rgba(129, 140, 248, 0.09), transparent 60%),
+    radial-gradient(52rem 36rem at 50% 115%, rgba(34, 211, 238, 0.05), transparent 60%);
+  background-attachment: fixed;
+}
+
+@layer base {
+  h1, h2, h3 {
+    @apply tracking-tight;
+  }
+  ::selection {
+    background: rgba(34, 211, 238, 0.28);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    @apply rounded-full;
+    background: rgba(148, 163, 184, 0.25);
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* Frosted panel — the core liquid-glass surface. Translucent fill +
+     backdrop blur + a 1px inner top highlight that reads as a lit edge. */
+  .card {
+    @apply rounded-2xl border shadow-glass transition-all duration-300;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.025));
+    border-color: rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(20px) saturate(1.3);
+    -webkit-backdrop-filter: blur(20px) saturate(1.3);
+  }
+  .card:hover {
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+  /* Clickable cards lift + glow (links styled as cards). */
+  a.card:hover {
+    @apply shadow-glass-lift -translate-y-0.5;
+    border-color: rgba(34, 211, 238, 0.35);
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2
+           text-sm font-medium transition-all duration-200 active:scale-[0.97]
+           disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100;
+  }
+  .btn-primary {
+    @apply btn text-bg shadow-glow-sm;
+    background: linear-gradient(135deg, #22d3ee, #38bdf8);
+  }
+  .btn-primary:hover:not(:disabled) {
+    @apply shadow-glow;
+    filter: brightness(1.08);
+  }
+  .btn-ghost {
+    @apply btn text-slate-300;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    backdrop-filter: blur(12px);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.16);
+  }
+
+  .input {
+    @apply w-full rounded-xl px-3 py-2 text-sm text-slate-100
+           placeholder:text-muted focus:outline-none transition-all duration-200;
+    background: rgba(255, 255, 255, 0.045);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    backdrop-filter: blur(12px);
+  }
+  .input:focus {
+    border-color: rgba(34, 211, 238, 0.55);
+    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.12);
+  }
+
+  .label {
+    @apply block text-xs font-medium text-muted mb-1;
+  }
+  .stat {
+    @apply text-2xl font-semibold font-mono tracking-tight;
+  }
+
+  /* Segmented glass toggle (chart modes, leaderboard windows). */
+  .segmented {
+    @apply flex rounded-xl overflow-hidden;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    backdrop-filter: blur(12px);
+  }
+
+  /* Shimmering loading placeholder. */
+  .skeleton {
+    @apply rounded-xl animate-shimmer;
+    background: linear-gradient(
+      100deg,
+      rgba(255, 255, 255, 0.03) 40%,
+      rgba(255, 255, 255, 0.09) 50%,
+      rgba(255, 255, 255, 0.03) 60%
+    );
+    background-size: 200% 100%;
+  }
+
+  /* Centered empty-state block inside a card. */
+  .empty-state {
+    @apply flex flex-col items-center justify-center gap-2 py-10 text-center;
+  }
+  .empty-state .icon {
+    @apply text-3xl opacity-40;
+  }
+
+  /* Staggered entrance. Guard's <main> carries .stagger; each page renders one
+     root wrapper inside it, so the page SECTIONS are the grandchildren. Pure
+     CSS so every page gets the cascade without per-page motion wiring. */
+  .stagger > * > * {
+    animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .stagger > * > *:nth-child(1) { animation-delay: 0.02s; }
+  .stagger > * > *:nth-child(2) { animation-delay: 0.08s; }
+  .stagger > * > *:nth-child(3) { animation-delay: 0.14s; }
+  .stagger > * > *:nth-child(4) { animation-delay: 0.2s; }
+  .stagger > * > *:nth-child(5) { animation-delay: 0.26s; }
+  .stagger > * > *:nth-child(n + 6) { animation-delay: 0.32s; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stagger > * > *,
+  .skeleton,
+  .animate-drift {
+    animation: none !important;
+  }
+}
