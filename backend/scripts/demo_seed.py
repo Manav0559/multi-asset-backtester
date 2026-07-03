@@ -79,41 +79,23 @@ def login_or_register(u: dict) -> str:
 
 # ----------------------------------------------------------------- data --
 def backfill_market_data() -> dict[str, int]:
-    """Real history via the app's own backfill module. Returns symbol->asset_id."""
-    from sqlalchemy import func, select
+    """The full universe (NASDAQ-100 + NIFTY 50 + top crypto, incl. intraday)
+    via scripts/backfill_universe.py. Returns the asset ids the demo trades."""
+    from sqlalchemy import select
 
-    from app.data.backfill import backfill_binance, backfill_yfinance
     from app.db.session import SessionLocal
-    from app.models import Asset, OhlcvBar
-    from app.models.enums import AssetClass, Timeframe
+    from scripts.backfill_universe import main as backfill_universe
 
-    def bar_count(asset_id: int) -> int:
-        with SessionLocal() as db:
-            return db.scalar(
-                select(func.count()).select_from(OhlcvBar)
-                .where(OhlcvBar.asset_id == asset_id, OhlcvBar.timeframe == Timeframe.D1)
-            ) or 0
+    backfill_universe()
 
+    from app.models import Asset
     ids: dict[str, int] = {}
-    plan = [
-        ("AAPL", lambda: backfill_yfinance("AAPL", "NASDAQ", AssetClass.US_EQUITY, period="5y")),
-        ("MSFT", lambda: backfill_yfinance("MSFT", "NASDAQ", AssetClass.US_EQUITY, period="5y")),
-        ("BTCUSDT", lambda: backfill_binance("BTCUSDT", limit=1000)),
-    ]
-    for symbol, run in plan:
-        with SessionLocal() as db:
-            existing = db.scalar(select(Asset.id).where(Asset.symbol == symbol))
-        if existing and bar_count(existing) > 500:
-            print(f"  {symbol}: {bar_count(existing)} bars already present, skipping backfill")
-            ids[symbol] = existing
-            continue
-        n = run()
-        with SessionLocal() as db:
+    with SessionLocal() as db:
+        for symbol in ("AAPL", "MSFT", "BTCUSDT"):
             ids[symbol] = db.scalar(select(Asset.id).where(Asset.symbol == symbol))
-        print(f"  {symbol}: backfilled {n} bars (asset_id={ids[symbol]})")
-        if not ids[symbol] or bar_count(ids[symbol]) < 100:
-            raise SystemExit(f"FATAL {symbol} backfill produced too little data — "
-                             "network blocked? Try again or check egress.")
+            if ids[symbol] is None:
+                raise SystemExit(f"FATAL {symbol} missing after universe backfill — "
+                                 "network blocked? Try again or check egress.")
     return ids
 
 

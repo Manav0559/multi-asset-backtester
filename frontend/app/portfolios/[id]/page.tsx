@@ -9,12 +9,12 @@ import Guard from "@/components/Guard";
 import { EmptyState, Skeleton, SkeletonRows } from "@/components/ui";
 import { useToast } from "@/components/ToastProvider";
 import { api } from "@/lib/api";
+import { Asset, groupAssets } from "@/lib/assets";
 import { Hub } from "@/lib/ws";
 
 type Portfolio = { id: string; name: string; cash_balance: string; initial_cash: string; version: number };
 type Position = { asset_id: number; qty: string; avg_entry_price: string; realized_pnl: string };
 type Ledger = { id: number; entry_type: string; amount: string; balance_after: string; note: string | null; created_at: string };
-type Asset = { id: number; symbol: string; exchange: string };
 type EquityPoint = { time: string; cash: string; equity: string };
 
 function PortfolioDetail() {
@@ -165,7 +165,11 @@ function PortfolioDetail() {
             <label className="label">Asset</label>
             <select className="input" value={assetId ?? ""}
               onChange={(e) => setAssetId(Number(e.target.value))}>
-              {assets.map((a) => <option key={a.id} value={a.id}>{a.symbol} · {a.exchange}</option>)}
+              {groupAssets(assets).map((g) => (
+                <optgroup key={g.label} label={g.label}>
+                  {g.items.map((a) => <option key={a.id} value={a.id}>{a.symbol}</option>)}
+                </optgroup>
+              ))}
             </select>
           </div>
           <div className="grid grid-cols-2 gap-2">

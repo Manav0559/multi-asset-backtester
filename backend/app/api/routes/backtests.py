@@ -59,17 +59,55 @@ def validate_custom_code(body: dict, user: User = Depends(get_current_user)) -> 
     return {"ok": True, "errors": [], "class_name": type(strategy).__name__}
 
 
+@router.get("/strategies")
+def list_my_strategies(user: User = Depends(get_current_user),
+                       db: Session = Depends(get_db)) -> list[dict]:
+    """The user's saved strategies (latest version each, with code) — powers
+    the BYOC editor's "load a previous script" picker. Only named, code-bearing
+    entries are useful there, but everything is returned for completeness."""
+    rows = db.execute(
+        select(Strategy.id, Strategy.name, StrategyVersion.id.label("version_id"),
+               StrategyVersion.version, StrategyVersion.code, Strategy.created_at)
+        .join(StrategyVersion, StrategyVersion.strategy_id == Strategy.id)
+        .where(Strategy.user_id == user.id)
+        .order_by(Strategy.created_at.desc(), StrategyVersion.version.desc())
+        .limit(200)
+    ).all()
+    seen: set = set()
+    out = []
+    for r in rows:  # keep only the latest version per strategy
+        if r.id in seen:
+            continue
+        seen.add(r.id)
+        out.append({"strategy_id": str(r.id), "version_id": str(r.version_id),
+                    "name": r.name, "version": r.version, "code": r.code or "",
+                    "created_at": r.created_at.isoformat()})
+    return out
+
+
 @router.post("/strategies", status_code=status.HTTP_201_CREATED)
 def create_strategy(body: StrategyCreate, user: User = Depends(get_current_user),
                     db: Session = Depends(get_db)) -> dict:
-    strat = Strategy(user_id=user.id, name=body.name)
-    db.add(strat)
-    db.flush()
-    version = StrategyVersion(strategy_id=strat.id, version=1,
-                             code=body.code, params=body.params)
+    """Create a strategy — or, if the user already has one with this name,
+    append a new VERSION. Users iterate on named scripts; a name collision is
+    the normal save flow, not an error (uq_strategies_user_name backs this)."""
+    strat = db.scalar(select(Strategy).where(
+        Strategy.user_id == user.id, Strategy.name == body.name))
+    if strat is None:
+        strat = Strategy(user_id=user.id, name=body.name)
+        db.add(strat)
+        db.flush()
+        next_version = 1
+    else:
+        next_version = (db.scalar(
+            select(func.max(StrategyVersion.version))
+            .where(StrategyVersion.strategy_id == strat.id)) or 0) + 1
+    version = StrategyVersion(strategy_id=strat.id, version=next_version,
+                              code=body.code, params=body.params)
     db.add(version)
     db.commit()
-    return {"strategy_id": str(strat.id), "version_id": str(version.id), "version": 1}
+    return {"strategy_id": str(strat.id), "version_id": str(version.id),
+            "version": next_version}
 
 
 @router.post("/backtests", response_model=BacktestOut, status_code=status.HTTP_202_ACCEPTED)
@@ -95,11 +133,15 @@ def submit_backtest(body: BacktestCreate, user: User = Depends(get_current_user)
         except SandboxError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                                 f"custom strategy rejected: {exc}") from exc
+    # Human label for result tables: the user's own strategy name makes
+    # "custom_code" rows recognizable ("my golden cross v2", not the key).
+    label = db.scalar(select(Strategy.name).where(Strategy.id == sv.strategy_id))
     config = {
         "asset_id": body.asset_id, "asset_ids": body.asset_ids,
         "timeframe": body.timeframe,
         "strategy": body.strategy, "params": body.params or {},
         "code": body.code,
+        "label": label,
         "start": body.start, "end": body.end,
         "initial_capital": body.initial_capital,
         "commission_bps": body.commission_bps, "n_trials": body.n_trials,

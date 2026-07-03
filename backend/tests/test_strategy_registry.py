@@ -11,7 +11,18 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.backtest.classic import BollingerReversion, MacdTrend, MomentumBreakout, PairsTrading
+from app.backtest.classic import (
+    AdxTrendFilter,
+    AtrChannelBreakout,
+    BollingerReversion,
+    EmaCrossover,
+    MacdTrend,
+    MomentumBreakout,
+    PairsTrading,
+    StochasticReversion,
+    SupertrendTrend,
+    ZScoreReversion,
+)
 from app.backtest.registry import STRATEGY_REGISTRY
 from app.backtest.sandbox import (
     DEFAULT_TEMPLATE,
@@ -59,6 +70,12 @@ def test_registry_build_matches_direct_call():
     (MomentumBreakout, {"entry": 20, "exit_": 10}),
     (BollingerReversion, {"length": 20}),
     (MacdTrend, {}),
+    (EmaCrossover, {"fast": 5, "slow": 15}),
+    (SupertrendTrend, {}),
+    (StochasticReversion, {}),
+    (AdxTrendFilter, {}),
+    (ZScoreReversion, {}),
+    (AtrChannelBreakout, {}),
 ])
 def test_classic_single_no_lookahead(cls, params):
     """Weights on the shared prefix must be identical with/without the future
