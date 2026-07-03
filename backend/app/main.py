@@ -11,6 +11,7 @@ from sqlalchemy import text
 from app.api.routes.auth import router as auth_router
 from app.api.routes.backtests import router as backtests_router
 from app.api.routes.challenges import router as challenges_router
+from app.api.routes.chat import router as chat_router
 from app.api.routes.leaderboard import router as leaderboard_router
 from app.api.routes.market import router as market_router
 from app.api.routes.orders import router as orders_router
@@ -64,6 +65,7 @@ app.include_router(backtests_router)
 app.include_router(leaderboard_router)
 app.include_router(market_router)
 app.include_router(challenges_router)
+app.include_router(chat_router)
 app.include_router(ws_router)
 
 

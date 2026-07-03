@@ -31,3 +31,17 @@ def portfolio_channel(portfolio_id: uuid.UUID) -> str:
 
 def publish_portfolio_event(portfolio_id: uuid.UUID, event: dict) -> None:
     _client().publish(portfolio_channel(portfolio_id), json.dumps(event))
+
+
+def fixed_window_allow(key: str, limit: int, window_s: int) -> bool:
+    """Redis fixed-window rate limit. True if the action is allowed. Fails OPEN
+    if Redis is unreachable (availability over strictness for a trading
+    simulator; the hard invariants live in Postgres)."""
+    try:
+        c = _client()
+        n = c.incr(key)
+        if n == 1:
+            c.expire(key, window_s)
+        return n <= limit
+    except redis.RedisError:
+        return True
