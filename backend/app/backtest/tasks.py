@@ -41,6 +41,12 @@ celery_app.conf.update(
     # bounds TIME — both are needed, neither substitutes for the other.
     task_time_limit=settings.BACKTEST_TIME_LIMIT_S,
     task_soft_time_limit=max(settings.BACKTEST_TIME_LIMIT_S - 30, 1),
+    # Crash safety: don't ack a task until it RETURNS, and requeue if the worker
+    # dies mid-task. A cgroup OOM-kill (SIGKILL) runs no except-path, so the
+    # backtest row would otherwise sit RUNNING forever — the reaper below is the
+    # backstop that heals it. acks_late makes at-least-once delivery explicit.
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
 )
 
 # Periodic equity snapshots feed the windowed (24h/7d) leaderboard. The beat
@@ -50,6 +56,11 @@ celery_app.conf.beat_schedule = {
     "portfolio-equity-snapshots": {
         "task": "portfolio.snapshot_equity",
         "schedule": settings.EQUITY_SNAPSHOT_INTERVAL_MINUTES * 60.0,
+    },
+    # Heal jobs whose worker died mid-run (SIGKILL/OOM leaves the row RUNNING).
+    "reap-dead-backtests": {
+        "task": "backtest.reap_dead",
+        "schedule": 60.0,
     },
 }
 
@@ -132,6 +143,18 @@ def snapshot_equity_task() -> dict:
         n = snapshot_portfolio_equity(db)
     SNAPSHOT_LAST_SUCCESS.set(time_mod.time())
     return {"snapshots": n}
+
+
+@celery_app.task(name="backtest.reap_dead")
+def reap_dead_backtests_task() -> dict:
+    from app.db.session import SessionLocal
+    from app.services.reaper import reap_dead_backtests
+
+    with SessionLocal() as db:
+        n = reap_dead_backtests(db)
+    if n:
+        logger.warning("reaper healed %d orphaned backtest(s)", n)
+    return {"reaped": n}
 
 
 @celery_app.task(name="backtest.run", bind=True, max_retries=0)
