@@ -22,7 +22,9 @@ wouldn't have had.
 | ![Asset chart with indicator overlays](screenshots/02-chart.png) | ![BYOC editor rejecting an import](screenshots/03-byoc.png) |
 | ![Live dashboard](screenshots/01-dashboard.png) | ![Grafana platform overview](screenshots/05-grafana.png) |
 
-![Windowed leaderboard](screenshots/04-leaderboard.png)
+| | |
+| --- | --- |
+| ![Windowed leaderboard](screenshots/04-leaderboard.png) | ![Consent-based head-to-head competition](screenshots/06-compete.png) |
 
 > Screenshots are generated, not hand-taken: `./scripts/demo.sh` then
 > `cd frontend && node scripts/capture-screenshots.mjs` re-captures all five

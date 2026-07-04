@@ -79,11 +79,18 @@ const main = async () => {
   // 04 — leaderboard with the 24h window selected. NOTE: the page polls SWR
   // every 5s, so "networkidle" never fires — wait on selectors instead.
   await page.goto(`${FRONT}/leaderboard`, { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "24H" }).click();
-  await page.waitForSelector("table");
-  await sleep(800);
+  await page.waitForSelector(".card");
+  await page.getByRole("button", { name: "24H" }).click().catch(() => {});
+  await sleep(1200);
   await page.screenshot({ path: `${OUT}04-leaderboard.png` });
   console.log("04-leaderboard.png");
+
+  // 06 — Compete: head-to-head competition (SWR polls; wait on selectors)
+  await page.goto(`${FRONT}/compete`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("h1");
+  await sleep(2500); // active-competition card fetches its head-to-head
+  await page.screenshot({ path: `${OUT}06-compete.png` });
+  console.log("06-compete.png");
 
   // 05 — Grafana board (anonymous Viewer is enabled in compose)
   await page.setViewportSize({ width: 1600, height: 1000 });
