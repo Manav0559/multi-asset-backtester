@@ -86,9 +86,23 @@ layered gradients), framer-motion route transitions and a gliding nav pill,
 staggered section entrances, glass toasts, shimmer skeletons — with
 `prefers-reduced-motion` respected throughout.
 
+**6 · Social trading.** Shared portfolios with role-based membership
+(owner/trader/viewer) and an invite→accept flow; **team chat** per portfolio,
+delivered live over the same WebSocket room, rate-limited, with author
+soft-delete; live actor attribution ("alice bought AAPL") on every fill.
+
+**7 · Consent-based competitions.** No global leaderboard — you challenge a
+specific user, both opt in on portfolios you each choose, and each side sees
+**only** the other's aggregate performance (return, drawdown, windowed Sharpe,
+win rate, trade count, normalized equity curve) — never their positions,
+trades, or strategy. Enforced server-side by a whitelisted schema (a snapshot
+test fails loudly if a field is ever added). Results freeze at the end of the
+window and stay immutable as portfolios keep trading.
+
 **Plus the platform underneath:** multiplayer portfolios sharing ONE cash
-balance (row-locked, WebSocket-synced), time-windowed leaderboards (24h / 7d /
-all) computed from periodic equity snapshots in a single SQL statement, and a
+balance (row-locked, idempotent fills, WebSocket-synced), time-windowed
+leaderboards (24h / 7d / all) from periodic equity snapshots in a single SQL
+statement, a crash-safe job system (reaper heals hard-killed backtests), and a
 provisioned Prometheus + Grafana observability stack with alerting.
 
 ---
