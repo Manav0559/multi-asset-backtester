@@ -28,6 +28,12 @@ const MODES: { key: ChartMode; label: string }[] = [
   { key: "bars", label: "Bars" },
 ];
 
+// Enough decimals to show real movement at any magnitude.
+function fmtPrice(n: number): string {
+  const d = n >= 1000 ? 2 : n >= 1 ? 3 : n >= 0.01 ? 5 : 7;
+  return n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+
 // Curated "greatest hits" pinned to the top of the picker; the full catalog
 // is grouped by category below them.
 const FEATURED = ["sma", "ema", "rsi", "macd", "bbands", "supertrend", "vwap", "atr", "adx", "ichimoku"];
@@ -106,10 +112,12 @@ function AssetPageInner() {
         <div className="flex items-baseline gap-3">
           <h1 className="text-xl font-semibold font-mono">{asset?.symbol ?? "…"}</h1>
           <span className="text-sm text-muted">{asset?.exchange} · {asset?.asset_class}</span>
-          {/* Live price streams from ticks; falls back to the last bar close. */}
+          {/* Live price streams from ticks; falls back to the last bar close.
+              Adaptive precision so sub-dollar assets (ADA, DOGE) show real
+              movement, not a 2-decimal round-off. */}
           <span className="font-mono text-lg" data-testid="live-price">
-            {live.price != null ? Number(live.price).toLocaleString(undefined, { maximumFractionDigits: 2 })
-              : last ? last.close.toFixed(2) : "…"}
+            {live.price != null ? fmtPrice(Number(live.price))
+              : last ? fmtPrice(last.close) : "…"}
           </span>
           {last && (
             <span className={`font-mono text-sm ${change >= 0 ? "text-up" : "text-down"}`}>
