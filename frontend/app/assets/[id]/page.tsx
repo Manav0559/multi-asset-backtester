@@ -13,7 +13,10 @@ import Link from "next/link";
 import useSWR from "swr";
 import Guard from "@/components/Guard";
 import AssetChart, { Bar, ChartMode, IndicatorSeries } from "@/components/AssetChart";
+import ProvenanceBadge from "@/components/ProvenanceBadge";
+import { LiveOrderBook, VolumeProfile } from "@/components/OrderBook";
 import { api, fetcher } from "@/lib/api";
+import { useLive } from "@/lib/live";
 
 type Asset = { id: number; symbol: string; exchange: string; asset_class: string };
 type CatalogEntry = { name: string; category: string; params: { name: string; default: number | null }[] };
@@ -49,6 +52,8 @@ function AssetPageInner() {
 
   const { data: assets } = useSWR<Asset[]>("/assets", fetcher);
   const asset = assets?.find((a) => a.id === assetId);
+  const isCrypto = asset?.asset_class === "crypto";
+  const live = useLive(assetId);
 
   const { data: bars } = useSWR<Bar[]>(
     `/assets/${assetId}/bars?timeframe=${timeframe}&limit=500`, fetcher,
@@ -101,14 +106,18 @@ function AssetPageInner() {
         <div className="flex items-baseline gap-3">
           <h1 className="text-xl font-semibold font-mono">{asset?.symbol ?? "…"}</h1>
           <span className="text-sm text-muted">{asset?.exchange} · {asset?.asset_class}</span>
+          {/* Live price streams from ticks; falls back to the last bar close. */}
+          <span className="font-mono text-lg" data-testid="live-price">
+            {live.price != null ? Number(live.price).toLocaleString(undefined, { maximumFractionDigits: 2 })
+              : last ? last.close.toFixed(2) : "…"}
+          </span>
           {last && (
-            <>
-              <span className="font-mono text-lg">${last.close.toFixed(2)}</span>
-              <span className={`font-mono text-sm ${change >= 0 ? "text-up" : "text-down"}`}>
-                {change >= 0 ? "+" : ""}{change.toFixed(2)}%
-              </span>
-            </>
+            <span className={`font-mono text-sm ${change >= 0 ? "text-up" : "text-down"}`}>
+              {change >= 0 ? "+" : ""}{change.toFixed(2)}%
+            </span>
           )}
+          <ProvenanceBadge provenance={live.provenance}
+            title={live.status?.label ? `market ${live.status.label}` : undefined} />
         </div>
         <Link href="/dashboard" className="text-sm text-muted hover:text-accent transition-colors">
           ← Dashboard
@@ -192,6 +201,26 @@ function AssetPageInner() {
           </div>
         ) : (
           <AssetChart bars={bars} mode={mode} indicators={overlays} />
+        )}
+      </div>
+
+      {/* Market activity: live L2 book + tape for crypto; last-session volume
+          profile for equities. Both carry a provenance badge. */}
+      <div className="card p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-medium">
+            {isCrypto ? "Order book" : "Market depth"}
+          </h2>
+          <ProvenanceBadge provenance={live.provenance} />
+        </div>
+        {isCrypto
+          ? <LiveOrderBook book={live.book} tape={live.tape} />
+          : <VolumeProfile assetId={assetId} />}
+        {!isCrypto && (
+          <p className="text-[11px] text-muted mt-2">
+            Equities have no live L2 feed here — this is real volume-at-price from the
+            last stored session, not a live book.
+          </p>
         )}
       </div>
     </div>
