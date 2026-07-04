@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # Windowed leaderboard: how often the Celery beat task snapshots equity.
     EQUITY_SNAPSHOT_INTERVAL_MINUTES: int = 5
 
+    # Delayed equity price poll (yfinance; NOT live — vendor-delayed ~15 min).
+    EQUITY_POLL_ENABLED: bool = True
+    EQUITY_POLL_INTERVAL_SECONDS: int = 20
+
     # Auth / JWT — MUST be overridden via env in any real deployment.
     # >= 32 bytes per RFC 7518 §3.2 for HS256
     JWT_SECRET: str = "dev-only-secret-change-me-in-production-0123456789"

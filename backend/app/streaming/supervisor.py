@@ -77,19 +77,34 @@ class StreamSupervisor:
         logger.info("supervisor stopped")
 
 
+def load_crypto_subscriptions(limit: int = 12) -> list[Subscription]:
+    """Stream the crypto universe from the `assets` table (the only LIVE feed).
+    Equities go through the beat-driven delayed poll, not this supervisor."""
+    from sqlalchemy import select
+
+    from app.db.session import SessionLocal
+    from app.models import Asset
+
+    with SessionLocal() as db:
+        rows = db.execute(
+            select(Asset.symbol, Asset.exchange)
+            .where(Asset.asset_class == AssetClass.CRYPTO)
+            .order_by(Asset.symbol).limit(limit)
+        ).all()
+    subs = [Subscription(sym, exch, AssetClass.CRYPTO) for sym, exch in rows]
+    if not subs:  # empty DB (fresh volume) — stream the majors so the demo is alive
+        subs = [Subscription(s, "BINANCE", AssetClass.CRYPTO)
+                for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT")]
+    return subs
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
-
-    # Demo universe. In production this comes from the `assets` table.
-    demo = [
-        Subscription("BTCUSDT", "BINANCE", AssetClass.CRYPTO),
-        Subscription("ETHUSDT", "BINANCE", AssetClass.CRYPTO),
-        Subscription("RELIANCE", "NSE", AssetClass.IN_EQUITY),
-        Subscription("GOLD", "MCX", AssetClass.COMMODITY),
-        Subscription("AAPL", "NASDAQ", AssetClass.US_EQUITY),
-    ]
+    subs = load_crypto_subscriptions()
+    logger.info("ticker streaming %d crypto symbols: %s",
+                len(subs), ", ".join(s.symbol for s in subs))
     try:
-        asyncio.run(StreamSupervisor(demo).run_forever())
+        asyncio.run(StreamSupervisor(subs).run_forever())
     except KeyboardInterrupt:
         pass

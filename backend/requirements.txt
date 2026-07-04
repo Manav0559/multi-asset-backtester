@@ -34,3 +34,6 @@ prometheus-client>=0.20
 
 # Indicator engine (150+ TA indicators via IndicatorService)
 pandas-ta>=0.4.71b0
+
+# Market hours / trading calendars
+exchange_calendars>=4.5

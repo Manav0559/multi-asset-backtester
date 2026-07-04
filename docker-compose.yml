@@ -121,6 +121,25 @@ services:
       retries: 3
       start_period: 20s
 
+  # Live market-data ingest: subscribes to Binance WS (trades + L2 depth) for
+  # the crypto universe and fans out onto Redis (tick:/depth:) for the hub.
+  # The ONLY live feed; equities use the beat-driven delayed poll in the worker.
+  ticker:
+    profiles: ["app"]
+    build:
+      context: ./backend
+    image: backtester-backend
+    command: ["python", "-m", "app.streaming.supervisor"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/backtester
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   frontend:
     profiles: ["app"]
     build:
