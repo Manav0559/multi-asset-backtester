@@ -6,6 +6,7 @@ import {
   Area, AreaChart, CartesianGrid, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import Guard from "@/components/Guard";
+import ChatPanel from "@/components/ChatPanel";
 import { EmptyState, Skeleton, SkeletonRows } from "@/components/ui";
 import { useToast } from "@/components/ToastProvider";
 import { api } from "@/lib/api";
@@ -217,6 +218,13 @@ function PortfolioDetail() {
         </div>
       </div>
 
+      <div className="grid lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2">
+          <ChatPanel portfolioId={id} />
+        </div>
+        <InvitePanel portfolioId={id} />
+      </div>
+
       <div className="card p-5">
         <h2 className="text-sm font-medium mb-3">Shared ledger</h2>
         <table className="w-full text-sm">
@@ -241,6 +249,46 @@ function PortfolioDetail() {
         </table>
       </div>
     </div>
+  );
+}
+
+function InvitePanel({ portfolioId }: { portfolioId: string }) {
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("trader");
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  async function invite(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api(`/portfolios/${portfolioId}/invites`, {
+        method: "POST", body: JSON.stringify({ invitee_email: email.trim(), role }),
+      });
+      toast.success(`Invited ${email} — they'll see it in their invites`);
+      setEmail("");
+    } catch (err: any) {
+      // Non-owners get 403; surface it plainly.
+      toast.error(err.status === 403 ? "Only the owner can invite" : err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={invite} className="card p-5 space-y-3 h-fit">
+      <h2 className="text-sm font-medium">Invite a teammate</h2>
+      <p className="text-xs text-muted">
+        Owner-only. They accept from their Invites, then share this cash balance.
+      </p>
+      <input className="input" type="email" required placeholder="teammate@email.com"
+        value={email} onChange={(e) => setEmail(e.target.value)} />
+      <select className="input" value={role} onChange={(e) => setRole(e.target.value)}>
+        <option value="trader">Trader (can trade)</option>
+        <option value="viewer">Viewer (read-only)</option>
+      </select>
+      <button className="btn-primary w-full" disabled={busy || !email}>Send invite</button>
+    </form>
   );
 }
 

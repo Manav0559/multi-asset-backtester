@@ -11,9 +11,13 @@ type Portfolio = {
   id: string; name: string; cash_balance: string; initial_cash: string;
   version: number; base_currency: string;
 };
+type PendingInvite = {
+  token: string; portfolio_name: string; inviter_username: string; role: string;
+};
 
 function PortfoliosInner() {
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
+  const [invites, setInvites] = useState<PendingInvite[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
   const [cash, setCash] = useState("100000");
@@ -21,8 +25,17 @@ function PortfoliosInner() {
 
   function load() {
     api<Portfolio[]>("/portfolios").then(setPortfolios);
+    api<PendingInvite[]>("/portfolios/invites/pending").then(setInvites).catch(() => {});
   }
   useEffect(load, []);
+
+  async function respondInvite(token: string, action: "accept" | "decline", pname: string) {
+    try {
+      await api(`/portfolios/invites/${action}`, { method: "POST", body: JSON.stringify({ token }) });
+      toast.success(action === "accept" ? `Joined ${pname}` : "Invite declined");
+      load();
+    } catch (e: any) { toast.error(e.message); }
+  }
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -47,10 +60,31 @@ function PortfoliosInner() {
           <h1 className="text-xl font-semibold">Portfolios</h1>
           <p className="text-sm text-muted">Shared multiplayer paper-trading accounts</p>
         </div>
-        <button className="btn-primary" onClick={() => setShowCreate((s) => !s)}>
+        <button className="btn-primary" data-create onClick={() => setShowCreate((s) => !s)}>
           + New portfolio
         </button>
       </div>
+
+      {invites.length > 0 && (
+        <div className="card p-5 space-y-2 border-accent/30">
+          <h2 className="text-sm font-medium text-accent">Portfolio invites</h2>
+          {invites.map((inv) => (
+            <div key={inv.token} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span>
+                <span className="font-mono">{inv.inviter_username}</span> invited you to{" "}
+                <span className="font-medium">{inv.portfolio_name}</span>{" "}
+                <span className="text-muted text-xs">as {inv.role}</span>
+              </span>
+              <div className="flex gap-2">
+                <button onClick={() => respondInvite(inv.token, "accept", inv.portfolio_name)}
+                  className="btn-primary !py-1 text-xs">Accept</button>
+                <button onClick={() => respondInvite(inv.token, "decline", inv.portfolio_name)}
+                  className="text-xs text-muted hover:text-down px-2">Decline</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {showCreate && (
         <form onSubmit={create} className="card p-5 flex flex-wrap items-end gap-4">
