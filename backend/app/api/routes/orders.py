@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import require_portfolio_role
 from app.db.session import get_db
-from app.models import Order, PortfolioMember
+from app.models import Order, PortfolioMember, User
 from app.models.enums import PortfolioRole
 from app.schemas.trading import OrderCreate, OrderOut, OrderResult
 from app.services.events import publish_portfolio_event
@@ -36,10 +36,11 @@ def place_order(portfolio_id: uuid.UUID, body: OrderCreate,
                             detail=str(exc)) from exc
 
     # Publish AFTER commit: a rolled-back trade never reaches a teammate's UI.
-    publish_portfolio_event(
-        portfolio_id,
-        result.to_event(portfolio_id, member.user_id, body.asset_id, body.side),
-    )
+    # Attribution (E5c): stamp the actor's username so a teammate's feed reads
+    # "alice bought AAPL", not a bare user id.
+    event = result.to_event(portfolio_id, member.user_id, body.asset_id, body.side)
+    event["username"] = db.scalar(select(User.username).where(User.id == member.user_id))
+    publish_portfolio_event(portfolio_id, event)
     return OrderResult(
         order_id=result.order_id, status=result.status.value, reason=result.reason,
         fill_price=result.fill_price, filled_qty=result.filled_qty,
