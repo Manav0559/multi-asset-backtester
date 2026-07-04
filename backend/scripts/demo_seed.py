@@ -183,6 +183,29 @@ def main() -> None:
     run_backtest(alice, "byoc: custom_code", {
         "strategy": "custom_code", "asset_id": msft, "code": template, "params": {}})
 
+    print("5/5 social: shared portfolio + chat + a live competition:")
+    if call("/challenges", token=alice):
+        print("    social data already present — skipping (idempotent re-run)")
+    else:
+        # A shared portfolio both trade in (invite -> accept), with team chat.
+        p_shared = ensure_portfolio(alice, "The Syndicate", "50000.00")
+        inv = call(f"/portfolios/{p_shared}/invites", "POST",
+                   {"invitee_email": USERS[1]["email"], "role": "trader"}, token=alice)
+        call("/portfolios/invites/accept", "POST", {"token": inv["token"]}, token=bob)  # type: ignore[index]
+        for who, body in [(alice, "gm team 👋"), (bob, "morning — AAPL looks strong"),
+                          (alice, "agreed, adding on the dip"),
+                          (bob, "I'll take the momentum side of the comp")]:
+            call(f"/portfolios/{p_shared}/chat", "POST", {"body": body}, token=who)
+        print(f"    The Syndicate ({p_shared[:8]}) — 2 members, {4} chat messages")
+
+        # A consent-based head-to-head: Alpha Capital vs Beta Fund, 1 week.
+        ch = call("/challenges", "POST", {
+            "opponent_username": USERS[1]["username"],
+            "challenger_portfolio_id": p_alice, "duration_days": 7}, token=alice)
+        call(f"/challenges/{ch['id']}/accept", "POST",  # type: ignore[index]
+             {"opponent_portfolio_id": p_bob}, token=bob)
+        print(f"    competition active: alice_demo (Alpha) vs bob_demo (Beta), 7d")
+
     front = os.environ.get("FRONTEND_URL", "http://localhost:3000")
     print("\n✔ demo ready")
     print(f"  app:       {front}   (login: {USERS[0]['email']} / {PASSWORD})")
