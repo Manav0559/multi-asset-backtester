@@ -1,6 +1,8 @@
 """Market-data read routes for the dashboard: list assets, fetch recent OHLCV
-bars for charting, and compute server-side indicator overlays (IndicatorService
-— the same engine the backtester uses, so chart and backtest never disagree)."""
+bars for charting, server-side indicator overlays, plus the live-market
+surfaces (open/closed status, last-known tick/depth snapshot, and a
+last-session volume-at-price profile that stands in for equity 'depth')."""
+import json
 import math
 
 import pandas as pd
@@ -12,9 +14,85 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.indicators import IndicatorError, IndicatorService
 from app.models import Asset, OhlcvBar, User
-from app.models.enums import Timeframe
+from app.models.enums import AssetClass, Timeframe
+from app.services.events import _client as _redis
+from app.services.market_hours import market_status
+from app.streaming.bus import depth_snapshot_key, tick_snapshot_key
 
 router = APIRouter(tags=["market"])
+
+
+def _asset_or_404(db: Session, asset_id: int) -> Asset:
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset not found")
+    return asset
+
+
+@router.get("/market/{asset_id}/status")
+def market_status_route(asset_id: int, user: User = Depends(get_current_user),
+                        db: Session = Depends(get_db)):
+    a = _asset_or_404(db, asset_id)
+    return {"asset_id": a.id, "symbol": a.symbol, "exchange": a.exchange,
+            **market_status(a.exchange, a.asset_class)}
+
+
+@router.get("/market/{asset_id}/snapshot")
+def market_snapshot(asset_id: int, user: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    """Last-known tick + depth from the Redis cache (instant value before the
+    first WS frame), with a provenance badge. LIVE only for crypto."""
+    a = _asset_or_404(db, asset_id)
+    r = _redis()
+    tick_raw = r.get(tick_snapshot_key(a.exchange, a.symbol))
+    depth_raw = r.get(depth_snapshot_key(a.exchange, a.symbol))
+    status = market_status(a.exchange, a.asset_class)
+    live = a.asset_class == AssetClass.CRYPTO
+    return {
+        "asset_id": a.id, "symbol": a.symbol, "exchange": a.exchange,
+        "tick": json.loads(tick_raw) if tick_raw else None,
+        "depth": json.loads(depth_raw) if depth_raw else None,
+        "provenance": "live" if live else status["provenance"],
+        "channels": {"tick": f"tick:{a.exchange}:{a.symbol}",
+                     "depth": f"depth:{a.exchange}:{a.symbol}"},
+        "status": status,
+    }
+
+
+@router.get("/market/{asset_id}/volume-profile")
+def volume_profile(asset_id: int, buckets: int = Query(20, ge=5, le=50),
+                   user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Last-session volume-at-price, the honest stand-in for equity 'depth'.
+    Derived from real stored bars — badged LAST SESSION, never presented as a
+    live book."""
+    a = _asset_or_404(db, asset_id)
+    # Prefer the finest intraday timeframe we have; fall back to daily.
+    for tf in (Timeframe.M1, Timeframe.M15, Timeframe.H1, Timeframe.D1):
+        rows = db.execute(
+            select(OhlcvBar.time, OhlcvBar.close, OhlcvBar.high, OhlcvBar.low,
+                   OhlcvBar.volume)
+            .where(OhlcvBar.asset_id == asset_id, OhlcvBar.timeframe == tf)
+            .order_by(OhlcvBar.time.desc()).limit(400)
+        ).all()
+        if len(rows) >= 10:
+            break
+    if not rows:
+        raise HTTPException(status_code=404, detail="no bars for volume profile")
+
+    session_date = rows[0].time.date().isoformat()
+    lo = float(min(r.low for r in rows))
+    hi = float(max(r.high for r in rows))
+    span = (hi - lo) or 1.0
+    levels = [0.0] * buckets
+    for r in rows:
+        idx = min(int((float(r.close) - lo) / span * buckets), buckets - 1)
+        levels[idx] += float(r.volume)
+    step = span / buckets
+    profile = [{"price": round(lo + (i + 0.5) * step, 6), "volume": round(v, 4)}
+               for i, v in enumerate(levels) if v > 0]
+    profile.sort(key=lambda x: x["price"], reverse=True)
+    return {"asset_id": a.id, "symbol": a.symbol, "session_date": session_date,
+            "provenance": "last_session", "levels": profile}
 
 
 @router.get("/assets")

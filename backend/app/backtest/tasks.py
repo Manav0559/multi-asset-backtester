@@ -62,6 +62,12 @@ celery_app.conf.beat_schedule = {
         "task": "backtest.reap_dead",
         "schedule": 60.0,
     },
+    # Delayed equity price poll (yfinance) — feeds the same tick channel as
+    # crypto so equity charts move; badged DELAYED (vendor delay ~15 min).
+    **({"poll-equity-ticks": {
+        "task": "market.poll_equity_ticks",
+        "schedule": float(settings.EQUITY_POLL_INTERVAL_SECONDS),
+    }} if settings.EQUITY_POLL_ENABLED else {}),
     # Close expired head-to-head competitions and freeze their final metrics.
     "finish-expired-challenges": {
         "task": "challenges.finish_expired",
@@ -160,6 +166,16 @@ def reap_dead_backtests_task() -> dict:
     if n:
         logger.warning("reaper healed %d orphaned backtest(s)", n)
     return {"reaped": n}
+
+
+@celery_app.task(name="market.poll_equity_ticks")
+def poll_equity_ticks_task() -> dict:
+    from app.db.session import SessionLocal
+    from app.services.equity_poll import poll_equity_ticks
+
+    with SessionLocal() as db:
+        n = poll_equity_ticks(db)
+    return {"ticks": n}
 
 
 @celery_app.task(name="challenges.finish_expired")
