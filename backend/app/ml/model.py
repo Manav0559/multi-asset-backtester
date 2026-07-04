@@ -1,21 +1,22 @@
-"""XGBoost direction-classifier strategy.
+"""Direction-classifier strategy — a catalog of sklearn-compatible model
+families behind ONE leakage-hardened pipeline.
 
-Trains a gradient-boosted classifier to predict whether the next
-`horizon`-bar return is positive, using only backward-looking features, and
-generates positions purely OUT-OF-SAMPLE via walk-forward CV with embargo.
+Every family predicts whether the next `horizon`-bar return is positive, using
+only backward-looking features, and generates positions purely OUT-OF-SAMPLE
+via purged + embargoed walk-forward CV. The pipeline is identical across
+families, so swapping RandomForest for XGBoost changes only the estimator —
+never the honesty guarantees:
 
-Why this is honest (and interview-defensible):
-  * Every prediction that becomes a trading signal comes from a model that
-    never saw that bar during training (walk-forward).
-  * The embargo (default = label horizon) purges the leakage between a
-    training label's forward window and the test block.
-  * The resulting signal feeds the SAME vectorized engine as every other
-    strategy, whose `.shift(1)` applies it on the next bar — so there is no
-    lookahead at signal-application time either.
+  * purged (>= label horizon) + embargoed walk-forward CV — no label leakage.
+  * isotonic probability calibration fit on a fold-INTERNAL split (never the
+    test block), so the p>0.5 threshold means what it says (Brier reported).
+  * a LogisticRegression baseline on the same folds — "did the fancy model beat
+    the dumb one?" is answered on every report.
+  * the resulting signal feeds the SAME vectorized engine (`.shift(1)`), so no
+    lookahead at application time either.
 
-`ml_direction_strategy(...)` returns a plain Strategy callable, so an ML
-model is a drop-in wherever a built-in strategy is used (runner, engine,
-API), with no special-casing downstream.
+Allowed families are sklearn-only (+ xgboost, already a dep) — no torch. See
+MODEL_FAMILIES.
 """
 from __future__ import annotations
 
@@ -29,96 +30,174 @@ from app.ml.features import FEATURE_COLUMNS, build_features
 from app.ml.labels import forward_return_label
 from app.ml.validation import walk_forward_splits
 
+# family id -> (label, factory). All expose predict_proba. sklearn + xgboost
+# only (no torch/lightgbm/catboost — see the run's kill list).
+MODEL_FAMILIES: dict[str, str] = {
+    "logistic_regression": "Logistic Regression (linear baseline)",
+    "decision_tree": "Decision Tree",
+    "random_forest": "Random Forest",
+    "extra_trees": "Extra Trees",
+    "gradient_boosting": "Gradient Boosting (sklearn)",
+    "mlp": "Neural Net (sklearn MLP)",
+    "xgboost": "XGBoost",
+}
+
+
+def _make_model(model_id: str, params: dict | None):
+    p = params or {}
+    if model_id == "logistic_regression":
+        from sklearn.linear_model import LogisticRegression
+        return LogisticRegression(max_iter=500, C=p.get("C", 1.0))
+    if model_id == "decision_tree":
+        from sklearn.tree import DecisionTreeClassifier
+        return DecisionTreeClassifier(max_depth=p.get("max_depth", 4), random_state=42)
+    if model_id == "random_forest":
+        from sklearn.ensemble import RandomForestClassifier
+        return RandomForestClassifier(
+            n_estimators=p.get("n_estimators", 120), max_depth=p.get("max_depth", 5),
+            n_jobs=1, random_state=42)
+    if model_id == "extra_trees":
+        from sklearn.ensemble import ExtraTreesClassifier
+        return ExtraTreesClassifier(
+            n_estimators=p.get("n_estimators", 120), max_depth=p.get("max_depth", 5),
+            n_jobs=1, random_state=42)
+    if model_id == "gradient_boosting":
+        from sklearn.ensemble import GradientBoostingClassifier
+        return GradientBoostingClassifier(
+            n_estimators=p.get("n_estimators", 100), max_depth=p.get("max_depth", 3),
+            learning_rate=p.get("learning_rate", 0.05), random_state=42)
+    if model_id == "mlp":
+        from sklearn.neural_network import MLPClassifier
+        return MLPClassifier(hidden_layer_sizes=p.get("hidden", (32, 16)),
+                             max_iter=p.get("max_iter", 300), random_state=42)
+    if model_id == "xgboost":
+        from xgboost import XGBClassifier
+        return XGBClassifier(
+            n_estimators=p.get("n_estimators", 120), max_depth=p.get("max_depth", 3),
+            learning_rate=p.get("learning_rate", 0.05), subsample=0.8,
+            colsample_bytree=0.8, reg_lambda=1.0, random_state=42, n_jobs=1,
+            eval_metric="logloss")
+    raise ValueError(f"unknown model family '{model_id}' (allowed: {list(MODEL_FAMILIES)})")
+
+
+def _importance(model) -> np.ndarray | None:
+    if hasattr(model, "feature_importances_"):
+        return np.asarray(model.feature_importances_, dtype=float)
+    if hasattr(model, "coef_"):
+        return np.abs(np.asarray(model.coef_, dtype=float)).ravel()
+    return None
+
 
 @dataclass
 class MLResult:
-    signal: pd.Series                 # OOS positions in {0,1}, aligned to df index
-    oos_accuracy: float               # directional accuracy on held-out folds
+    signal: pd.Series
+    oos_accuracy: float
     n_predictions: int
-    feature_importance: dict = field(default_factory=dict)
+    model_id: str = "xgboost"
+    brier_score: float | None = None            # calibration quality on OOS probs
+    baseline_oos_accuracy: float | None = None  # logistic baseline, same folds
+    fold_metrics: list = field(default_factory=list)  # [{fold,is_acc,oos_acc}]
+    feature_importance: dict = field(default_factory=dict)      # mean
+    feature_importance_std: dict = field(default_factory=dict)  # across folds
 
 
-def _make_model(params: dict | None):
-    from xgboost import XGBClassifier
-
-    defaults = dict(
-        n_estimators=120, max_depth=3, learning_rate=0.05,
-        subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0,
-        random_state=42, n_jobs=1, eval_metric="logloss",
-    )
-    defaults.update(params or {})
-    return XGBClassifier(**defaults)
+def _fit_predict_proba(model_id, params, Xtr, ytr, Xte, calibrate: bool):
+    """Fit on the training fold (optionally isotonic-calibrated on a
+    fold-internal split) and return OOS probabilities for the test block."""
+    from sklearn.calibration import CalibratedClassifierCV
+    model = _make_model(model_id, params)
+    if calibrate and len(Xtr) >= 60 and ytr.nunique() > 1:
+        # cv=3 is INTERNAL to the training fold — the test block is never seen.
+        try:
+            cal = CalibratedClassifierCV(model, method="isotonic", cv=3)
+            cal.fit(Xtr, ytr)
+            return cal.predict_proba(Xte)[:, 1], model.fit(Xtr, ytr)
+        except Exception:  # noqa: BLE001 — degenerate fold; fall back to raw
+            pass
+    model.fit(Xtr, ytr)
+    return model.predict_proba(Xte)[:, 1], model
 
 
 def run_ml_direction(
     df: pd.DataFrame,
     *,
+    model_id: str = "xgboost",
     horizon: int = 1,
     threshold: float = 0.0,
     n_splits: int = 5,
     embargo: int | None = None,
     prob_threshold: float = 0.5,
+    calibrate: bool = True,
     model_params: dict | None = None,
 ) -> MLResult:
-    """Walk-forward train/predict; return an OOS signal + diagnostics."""
-    embargo = horizon if embargo is None else embargo
+    """Walk-forward train/predict for one model family; OOS signal + diagnostics."""
+    if model_id not in MODEL_FAMILIES:
+        raise ValueError(f"unknown model family '{model_id}'")
+    embargo = 0 if embargo is None else embargo
 
     feats = build_features(df)
     labels = forward_return_label(df["close"].astype(float), horizon, threshold)
-
-    # Align features and labels on their common index (drops warmup + tail).
     common = feats.index.intersection(labels.index)
     X = feats.loc[common, FEATURE_COLUMNS]
     y = labels.loc[common]
-
     if len(X) < (n_splits + 1) * 10:
         raise ValueError(f"not enough samples ({len(X)}) for {n_splits}-fold walk-forward")
 
     signal = pd.Series(0.0, index=df.index)
-    importances = np.zeros(len(FEATURE_COLUMNS))
-    n_imp = 0
-    correct = total = 0
+    imps: list[np.ndarray] = []
+    fold_metrics: list[dict] = []
+    all_true: list[np.ndarray] = []
+    all_proba: list[np.ndarray] = []
+    base_correct = base_total = 0
 
-    for train_idx, test_idx in walk_forward_splits(len(X), n_splits, embargo):
-        model = _make_model(model_params)
-        model.fit(X.iloc[train_idx], y.iloc[train_idx])
-
-        proba = model.predict_proba(X.iloc[test_idx])[:, 1]
+    # purge >= label horizon is the leakage-critical gap; embargo is extra buffer.
+    for i, (tr, te) in enumerate(walk_forward_splits(len(X), n_splits, embargo=embargo, purge=horizon)):
+        Xtr, ytr, Xte, yte = X.iloc[tr], y.iloc[tr], X.iloc[te], y.iloc[te]
+        proba, fitted = _fit_predict_proba(model_id, model_params, Xtr, ytr, Xte, calibrate)
         preds = (proba > prob_threshold).astype(float)
+        signal.loc[X.index[te]] = preds
 
-        test_ts = X.index[test_idx]
-        signal.loc[test_ts] = preds
+        yt = yte.to_numpy()
+        oos_acc = float(((proba > 0.5).astype(int) == yt).mean()) if len(yt) else float("nan")
+        is_pred = (fitted.predict_proba(Xtr)[:, 1] > 0.5).astype(int)
+        is_acc = float((is_pred == ytr.to_numpy()).mean()) if len(ytr) else float("nan")
+        fold_metrics.append({"fold": i, "is_acc": round(is_acc, 4), "oos_acc": round(oos_acc, 4)})
+        all_true.append(yt); all_proba.append(proba)
+        imp = _importance(fitted)
+        if imp is not None and len(imp) == len(FEATURE_COLUMNS):
+            imps.append(imp)
 
-        y_true = y.iloc[test_idx].to_numpy()
-        correct += int(((proba > 0.5).astype(int) == y_true).sum())
-        total += len(y_true)
-        importances += model.feature_importances_
-        n_imp += 1
+        # Logistic baseline on the same fold.
+        base = _make_model("logistic_regression", None)
+        base.fit(Xtr, ytr)
+        base_correct += int((base.predict(Xte) == yt).sum())
+        base_total += len(yt)
 
-    oos_acc = correct / total if total else float("nan")
-    imp = (importances / n_imp) if n_imp else importances
+    true = np.concatenate(all_true) if all_true else np.array([])
+    proba = np.concatenate(all_proba) if all_proba else np.array([])
+    oos_acc = float(((proba > 0.5).astype(int) == true).mean()) if len(true) else float("nan")
+    brier = float(np.mean((proba - true) ** 2)) if len(true) else None
+    base_acc = base_correct / base_total if base_total else None
+
+    imp_mean = np.mean(imps, axis=0) if imps else np.zeros(len(FEATURE_COLUMNS))
+    imp_std = np.std(imps, axis=0) if imps else np.zeros(len(FEATURE_COLUMNS))
+    order = np.argsort(imp_mean)[::-1]
     return MLResult(
-        signal=signal,
-        oos_accuracy=oos_acc,
-        n_predictions=total,
-        feature_importance=dict(sorted(
-            zip(FEATURE_COLUMNS, imp.tolist()), key=lambda kv: kv[1], reverse=True)),
+        signal=signal, oos_accuracy=oos_acc, n_predictions=int(len(true)),
+        model_id=model_id, brier_score=brier, baseline_oos_accuracy=base_acc,
+        fold_metrics=fold_metrics,
+        feature_importance={FEATURE_COLUMNS[i]: round(float(imp_mean[i]), 4) for i in order},
+        feature_importance_std={FEATURE_COLUMNS[i]: round(float(imp_std[i]), 4) for i in order},
     )
 
 
-def ml_direction_strategy(
-    horizon: int = 1, threshold: float = 0.0, n_splits: int = 5,
-    embargo: int | None = None, prob_threshold: float = 0.5,
-    model_params: dict | None = None,
-) -> Strategy:
-    """Factory returning a Strategy that runs walk-forward ML internally.
-
-    Note: this trains N models each time it's called, so it's heavier than a
-    rule-based strategy — appropriate for the Celery worker, not a hot path."""
+def ml_direction_strategy(model_id: str = "xgboost", horizon: int = 1,
+                          threshold: float = 0.0, n_splits: int = 5,
+                          embargo: int | None = None, prob_threshold: float = 0.5,
+                          model_params: dict | None = None) -> Strategy:
     def _strategy(df: pd.DataFrame) -> pd.Series:
-        result = run_ml_direction(
-            df, horizon=horizon, threshold=threshold, n_splits=n_splits,
-            embargo=embargo, prob_threshold=prob_threshold, model_params=model_params)
-        return result.signal
-
+        return run_ml_direction(
+            df, model_id=model_id, horizon=horizon, threshold=threshold,
+            n_splits=n_splits, embargo=embargo, prob_threshold=prob_threshold,
+            model_params=model_params).signal
     return _strategy
