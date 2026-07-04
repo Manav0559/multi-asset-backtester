@@ -114,6 +114,22 @@ def list_members(portfolio_id: uuid.UUID,
     ).all()
 
 
+@router.get("/{portfolio_id}/presence")
+def list_presence(portfolio_id: uuid.UUID,
+                  member: PortfolioMember = Depends(require_portfolio_role(PortfolioRole.VIEWER)),
+                  db: Session = Depends(get_db)) -> list[dict]:
+    """Who's online in this room right now (Redis TTL-expired presence set),
+    resolved to usernames for avatars."""
+    from app.services.presence import online_members
+    ids = online_members(portfolio_id)
+    if not ids:
+        return []
+    rows = db.execute(
+        select(User.id, User.username).where(User.id.in_([uuid.UUID(i) for i in ids]))
+    ).all()
+    return [{"user_id": str(uid), "username": uname} for uid, uname in rows]
+
+
 @router.get("/{portfolio_id}/positions", response_model=list[PositionOut])
 def list_positions(portfolio_id: uuid.UUID,
                    member: PortfolioMember = Depends(require_portfolio_role(PortfolioRole.VIEWER)),

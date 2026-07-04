@@ -57,22 +57,51 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(...)):
 
     # Stamp memberships so the hub can authorize portfolio:{id} subscriptions.
     websocket.state.user_id = user.id
-    websocket.state.portfolio_channels = _portfolio_channels(user.id)
+    channels = _portfolio_channels(user.id)
+    websocket.state.portfolio_channels = channels
+    portfolio_ids = [c.split(":", 1)[1] for c in channels]
 
     await manager.connect(websocket)
     await websocket.send_text(json.dumps({"type": "connected", "user": str(user.id)}))
+    await _presence(portfolio_ids, user.id, online=True)  # I'm here — tell the rooms
 
     try:
         while True:
             raw = await websocket.receive_text()
-            await _dispatch(websocket, raw)
+            await _dispatch(websocket, raw, portfolio_ids, user.id)
     except WebSocketDisconnect:
         pass
     finally:
         await manager.disconnect(websocket)
+        await _presence(portfolio_ids, user.id, online=False)  # I left — update the rooms
 
 
-async def _dispatch(websocket: WebSocket, raw: str) -> None:
+async def _presence(portfolio_ids: list[str], user_id, *, online: bool) -> None:
+    """Mark presence and broadcast the room's online set. Runs the sync Redis
+    ops off the event loop."""
+    import asyncio
+
+    from app.services.events import publish_portfolio_event
+    from app.services.presence import mark_offline, mark_online, online_members
+
+    def _work():
+        for pid in portfolio_ids:
+            (mark_online if online else mark_offline)(pid, user_id)
+            publish_portfolio_event(pid, {"type": "presence", "portfolio_id": pid,
+                                          "online": online_members(pid)})
+    await asyncio.to_thread(_work)
+
+
+async def _heartbeat(portfolio_ids: list[str], user_id) -> None:
+    """Refresh presence TTL on client ping (no rebroadcast — TTL just extends)."""
+    import asyncio
+
+    from app.services.presence import mark_online
+    await asyncio.to_thread(lambda: [mark_online(pid, user_id) for pid in portfolio_ids])
+
+
+async def _dispatch(websocket: WebSocket, raw: str,
+                    portfolio_ids: list[str] | None = None, user_id=None) -> None:
     try:
         msg = json.loads(raw)
     except json.JSONDecodeError:
@@ -96,6 +125,8 @@ async def _dispatch(websocket: WebSocket, raw: str) -> None:
         await manager.unsubscribe(websocket, channels)
         await websocket.send_text(json.dumps({"type": "unsubscribed", "channels": channels}))
     elif action == "ping":
+        if portfolio_ids and user_id is not None:
+            await _heartbeat(portfolio_ids, user_id)  # refresh presence TTL
         await websocket.send_text(json.dumps({"type": "pong"}))
     else:
         await websocket.send_text(json.dumps({"type": "error", "detail": f"unknown action: {action}"}))
