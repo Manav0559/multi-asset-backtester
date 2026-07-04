@@ -16,7 +16,12 @@ from __future__ import annotations
 import redis.asyncio as aioredis
 
 from app.core.config import settings
-from app.streaming.envelope import Bar, Tick
+from app.streaming.envelope import Bar, Depth, Tick
+
+# Last-known snapshots are cached in Redis with this TTL so a browser that
+# connects between ticks gets an immediate value, and a stale (dead-feed)
+# snapshot expires rather than lying.
+SNAPSHOT_TTL_S = 10
 
 
 def tick_channel(exchange: str, symbol: str) -> str:
@@ -25,6 +30,18 @@ def tick_channel(exchange: str, symbol: str) -> str:
 
 def bar_channel(exchange: str, symbol: str, timeframe: str) -> str:
     return f"bar:{exchange}:{symbol}:{timeframe}"
+
+
+def depth_channel(exchange: str, symbol: str) -> str:
+    return f"depth:{exchange}:{symbol}"
+
+
+def tick_snapshot_key(exchange: str, symbol: str) -> str:
+    return f"ticks:last:{exchange}:{symbol}"
+
+
+def depth_snapshot_key(exchange: str, symbol: str) -> str:
+    return f"depth:last:{exchange}:{symbol}"
 
 
 class TickBus:
@@ -49,9 +66,22 @@ class TickBus:
         return self._redis
 
     async def publish_tick(self, tick: Tick) -> None:
-        await self.redis.publish(tick_channel(tick.exchange, tick.symbol), tick.to_json())
+        payload = tick.to_json()
+        await self.redis.publish(tick_channel(tick.exchange, tick.symbol), payload)
+        # Cache the last value so a late-joining browser sees a price immediately.
+        await self.redis.set(tick_snapshot_key(tick.exchange, tick.symbol),
+                             payload, ex=SNAPSHOT_TTL_S)
 
     async def publish_bar(self, bar: Bar) -> None:
         await self.redis.publish(
             bar_channel(bar.exchange, bar.symbol, bar.timeframe.value), bar.to_json()
         )
+
+    async def publish_depth(self, depth: Depth) -> None:
+        payload = depth.to_json()
+        await self.redis.publish(depth_channel(depth.exchange, depth.symbol), payload)
+        # Live books get a short TTL; a reconstructed last-session profile is kept
+        # long enough that the closed-market view survives between polls.
+        ttl = SNAPSHOT_TTL_S if depth.is_live else 3600
+        await self.redis.set(depth_snapshot_key(depth.exchange, depth.symbol),
+                             payload, ex=ttl)

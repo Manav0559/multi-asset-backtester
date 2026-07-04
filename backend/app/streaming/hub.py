@@ -6,28 +6,28 @@ subscription filtering so a client only receives the channels it asked for.
 
 Architecture / scaling contract:
   * Each FastAPI process runs ONE ConnectionManager with ONE Redis pubsub.
-  * The pubsub psubscribes to broad patterns (tick:*, bar:*, portfolio:*)
-    ONCE at startup and the reader loop owns it exclusively. Per-client
-    filtering is done in-memory (the _subscribers map), never via dynamic
-    (p)subscribe calls — redis-py's async PubSub is single-connection and
-    calling psubscribe() while listen() is reading deadlocks them. Broad
-    startup patterns sidestep that entirely.
-  * Trade-off: a process receives every market channel from Redis even if
-    only some are wanted locally, then filters. Fine at our scale; if a
-    single process ever needs to relay only a slice, shard by running
-    dedicated hubs per pattern — no code change to the filtering path.
-  * Because fan-out rides Redis, the process that ingests a vendor stream
-    (or handles an order) is fully decoupled from the process holding the
-    browser socket. This is what lets the web tier scale horizontally.
+  * The pubsub psubscribes to broad patterns (tick:*, bar:*, depth:*,
+    portfolio:*) ONCE at startup and the reader loop owns it exclusively.
+    Per-client filtering is in-memory (never dynamic (p)subscribe — redis-py's
+    async PubSub deadlocks if you subscribe while listen() reads).
+  * Fan-out rides Redis, so the ingest process (or order handler) is decoupled
+    from the process holding the browser socket — the web tier scales out
+    without sticky sessions.
 
-Channel names reuse the Step-3 scheme (tick:{exch}:{sym},
-bar:{exch}:{sym}:{tf}) plus portfolio:{uuid} for ledger events (Step 5).
+Slow-consumer safety (the backpressure fix):
+  * Each socket has a `_Sender` with a bounded, CONFLATING outbound buffer.
+    tick:/depth:/bar: frames are conflatable — only the LATEST per channel is
+    kept, so a client on hotel wifi that can't keep up simply skips stale
+    ticks instead of ballooning our memory.
+  * portfolio: frames are MUST-DELIVER (a missed fill or chat message is a
+    correctness bug), so they queue; if a client can't drain even those
+    (bounded queue overflows) it is disconnected rather than served stale.
 
 Client protocol (JSON frames):
-  ->  {"action":"subscribe","channels":["bar:BINANCE:BTCUSDT:1m"]}
+  ->  {"action":"subscribe","channels":["depth:BINANCE:BTCUSDT"]}
   ->  {"action":"unsubscribe","channels":[...]}
-  <-  {"type":"subscribed","channels":[...]}       (ack)
-  <-  {"type":"message","channel":"...","data":{...}}   (relayed payload)
+  <-  {"type":"subscribed","channels":[...]}
+  <-  {"type":"message","channel":"...","data":{...}}
   <-  {"type":"error","detail":"..."}
 """
 from __future__ import annotations
@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
 
 from fastapi import WebSocket
 
@@ -43,34 +43,84 @@ from app.streaming.bus import TickBus
 
 logger = logging.getLogger("streaming.hub")
 
-# Channel prefixes a client is allowed to subscribe to directly.
-_PUBLIC_PREFIXES = ("tick:", "bar:")
+_PUBLIC_PREFIXES = ("tick:", "bar:", "depth:")
 _PORTFOLIO_PREFIX = "portfolio:"
+_HUB_PATTERNS = ("tick:*", "bar:*", "depth:*", "portfolio:*")
+# Only the latest value per conflatable channel matters; a slow client drops
+# intermediate ones. Everything else (portfolio:) is must-deliver.
+_CONFLATABLE_PREFIXES = ("tick:", "depth:", "bar:")
+_MUST_DELIVER_MAX = 1000  # queued must-deliver frames before we drop the client
 
-# Broad patterns the reader owns from startup; covers every channel the
-# adapters (Step 3) and the ledger (Step 5) publish to.
-_HUB_PATTERNS = ("tick:*", "bar:*", "portfolio:*")
+
+def _is_conflatable(channel: str) -> bool:
+    return channel.startswith(_CONFLATABLE_PREFIXES)
+
+
+class _Sender:
+    """Per-connection conflating outbound buffer + writer task.
+
+    offer() is called from the reader loop (never blocks on the socket). The
+    writer drains must-deliver frames first, then the latest conflated frame
+    per channel. Overflow of must-deliver marks the client for disconnect.
+    """
+
+    def __init__(self, ws: WebSocket):
+        self.ws = ws
+        self._conflated: dict[str, str] = {}   # channel -> latest frame
+        self._must: deque[str] = deque()
+        self._event = asyncio.Event()
+        self.closed = False
+        self.overflowed = False
+
+    def offer(self, channel: str, frame: str) -> None:
+        if _is_conflatable(channel):
+            self._conflated[channel] = frame   # overwrite: keep only latest
+        elif len(self._must) >= _MUST_DELIVER_MAX:
+            self.overflowed = True             # can't keep up with must-deliver
+        else:
+            self._must.append(frame)
+        self._event.set()
+
+    def pending_conflated(self) -> int:
+        """Test hook: how many distinct conflated channels are buffered."""
+        return len(self._conflated)
+
+    async def run(self) -> None:
+        try:
+            while not self.closed:
+                await self._event.wait()
+                self._event.clear()
+                if self.overflowed:
+                    break
+                batch = list(self._must)
+                self._must.clear()
+                batch.extend(self._conflated.values())
+                self._conflated.clear()
+                for frame in batch:
+                    await self.ws.send_text(frame)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — dead socket ends the writer, not the hub
+            pass
+        finally:
+            self.closed = True
 
 
 class ConnectionManager:
-    """Owns all local WS connections + the single shared Redis subscription,
-    and routes relayed messages to the right sockets."""
-
     def __init__(self, bus: TickBus | None = None):
         self.bus = bus or TickBus()
-        # channel -> set of sockets locally subscribed to it
         self._subscribers: dict[str, set[WebSocket]] = defaultdict(set)
-        # socket -> channels it's subscribed to (for O(1) disconnect cleanup)
         self._conn_channels: dict[WebSocket, set[str]] = defaultdict(set)
+        self._senders: dict[WebSocket, _Sender] = {}
+        self._sender_tasks: dict[WebSocket, asyncio.Task] = {}
         self._pubsub = None
         self._reader_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
-    # ---- lifecycle (called from FastAPI lifespan) -------------------------
+    # ---- lifecycle --------------------------------------------------------
     async def start(self) -> None:
         await self.bus.connect()
         self._pubsub = self.bus.redis.pubsub()
-        # Subscribe to broad patterns ONCE; the reader owns the pubsub after this.
         await self._pubsub.psubscribe(*_HUB_PATTERNS)
         self._reader_task = asyncio.create_task(self._reader_loop(), name="hub-reader")
         logger.info("connection manager started (patterns=%s)", _HUB_PATTERNS)
@@ -89,11 +139,11 @@ class ConnectionManager:
     # ---- connection registration ------------------------------------------
     async def connect(self, ws: WebSocket) -> None:
         await ws.accept()
+        sender = _Sender(ws)
+        self._senders[ws] = sender
+        self._sender_tasks[ws] = asyncio.create_task(sender.run(), name="ws-sender")
 
     async def disconnect(self, ws: WebSocket) -> None:
-        """Remove a socket from all in-memory routing maps. No Redis calls:
-        the pubsub keeps its broad startup patterns for the process
-        lifetime, so a disconnect is pure local bookkeeping."""
         async with self._lock:
             channels = self._conn_channels.pop(ws, set())
             for ch in channels:
@@ -103,8 +153,14 @@ class ConnectionManager:
                 subs.discard(ws)
                 if not subs:
                     self._subscribers.pop(ch, None)
+        sender = self._senders.pop(ws, None)
+        if sender:
+            sender.closed = True
+        task = self._sender_tasks.pop(ws, None)
+        if task:
+            task.cancel()
 
-    # ---- subscribe / unsubscribe (in-memory routing only) -----------------
+    # ---- subscribe / unsubscribe ------------------------------------------
     async def subscribe(self, ws: WebSocket, channels: list[str]) -> list[str]:
         accepted: list[str] = []
         async with self._lock:
@@ -128,10 +184,6 @@ class ConnectionManager:
                     self._subscribers.pop(ch, None)
 
     def _is_allowed(self, ws: WebSocket, channel: str) -> bool:
-        """Authorization gate for a subscription request. Public market
-        channels are open to any authenticated user; portfolio channels
-        require membership, checked at subscribe time against the set the
-        endpoint stamped on the socket."""
         if channel.startswith(_PUBLIC_PREFIXES):
             return True
         if channel.startswith(_PORTFOLIO_PREFIX):
@@ -154,18 +206,11 @@ class ConnectionManager:
                 "channel": channel,
                 "data": json.loads(message["data"]),
             })
-            await asyncio.gather(
-                *(self._safe_send(ws, frame) for ws in targets),
-                return_exceptions=True,
-            )
-
-    @staticmethod
-    async def _safe_send(ws: WebSocket, frame: str) -> None:
-        try:
-            await ws.send_text(frame)
-        except Exception:  # noqa: BLE001 — a dead socket shouldn't break the relay
-            pass
+            for ws in targets:
+                sender = self._senders.get(ws)
+                if sender is None or sender.closed:
+                    continue
+                sender.offer(channel, frame)   # never blocks on the socket
 
 
-# Process-wide singleton, wired into FastAPI lifespan in main.py.
 manager = ConnectionManager()
