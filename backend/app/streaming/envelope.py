@@ -6,9 +6,12 @@ downstream sees it. The WS hub, the persistence writer, and the frontend
 therefore never learn about source-specific schemas — swapping or adding a
 data vendor touches exactly one adapter file.
 
-Two message shapes:
+Three message shapes:
   * Tick  — a single trade/price update (sub-second, unaggregated).
   * Bar   — a completed OHLCV candle for a (symbol, timeframe).
+  * Depth — a level-2 order-book snapshot (top-N bids/asks). `is_live` marks a
+            real streamed book (crypto) vs a reconstructed last-session profile
+            (equities) so the UI can badge provenance honestly.
 
 Prices/volumes are Decimal to preserve precision on the way into the
 Numeric columns of ohlcv_bars (floats would lose cents/satoshis).
@@ -59,6 +62,40 @@ class Bar:
 
     def to_json(self) -> str:
         return json.dumps(_serialize(self))
+
+
+@dataclass(frozen=True, slots=True)
+class Depth:
+    """Top-N order-book snapshot. `bids`/`asks` are [[price, size], ...] sorted
+    best-first (bids desc, asks asc). `is_live` distinguishes a real streamed
+    book from a last-session volume-at-price reconstruction."""
+    symbol: str
+    exchange: str
+    asset_class: AssetClass
+    ts: datetime
+    bids: list           # [[Decimal price, Decimal size], ...]
+    asks: list
+    is_live: bool = True
+
+    def to_json(self) -> str:
+        return json.dumps({
+            "symbol": self.symbol, "exchange": self.exchange,
+            "asset_class": self.asset_class.value, "ts": self.ts.isoformat(),
+            "bids": [[str(p), str(s)] for p, s in self.bids],
+            "asks": [[str(p), str(s)] for p, s in self.asks],
+            "is_live": self.is_live,
+        })
+
+
+def make_depth(symbol, exchange, asset_class, ts, bids, asks, is_live=True) -> Depth:
+    return Depth(
+        symbol=symbol, exchange=exchange,
+        asset_class=AssetClass(asset_class) if not isinstance(asset_class, AssetClass) else asset_class,
+        ts=_ensure_utc(ts),
+        bids=[[_dec(p), _dec(s)] for p, s in bids],
+        asks=[[_dec(p), _dec(s)] for p, s in asks],
+        is_live=is_live,
+    )
 
 
 def make_tick(symbol, exchange, asset_class, price, volume, ts) -> Tick:
