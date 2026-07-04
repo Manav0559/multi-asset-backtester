@@ -6,6 +6,7 @@ from app.models.backtest import Backtest, BacktestYearlyResult
 from app.models.challenge import Challenge
 from app.models.chat import ChatMessage
 from app.models.market_data import OhlcvBar
+from app.models.ml_trial import MlTrial
 from app.models.portfolio import Portfolio, PortfolioInvite, PortfolioMember
 from app.models.snapshot import PortfolioEquitySnapshot
 from app.models.strategy import Strategy, StrategyVersion
@@ -27,6 +28,7 @@ __all__ = [
     "Strategy",
     "StrategyVersion",
     "LedgerEntry",
+    "MlTrial",
     "Order",
     "Position",
     "Trade",

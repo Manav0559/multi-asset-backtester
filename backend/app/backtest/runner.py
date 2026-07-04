@@ -77,6 +77,28 @@ def load_panel(db: Session, asset_ids: list[int], timeframe: Timeframe,
     return close_panel, vol_panel
 
 
+def _record_and_count_trial(cfg: dict, params: dict) -> int:
+    """Log this ML backtest as a trial and return how many trials share its
+    research question (family + asset). That count is the REAL N for the
+    Deflated Sharpe multiple-testing correction — not a client-supplied guess."""
+    import hashlib
+    import json as _json
+
+    from sqlalchemy import func, select
+
+    from app.models import MlTrial
+
+    model_id = params.get("model_id", "xgboost")
+    research_key = f"{model_id}:{cfg.get('asset_id')}"
+    phash = hashlib.sha1(
+        _json.dumps(params, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    with SessionLocal() as db:
+        db.add(MlTrial(research_key=research_key, params_hash=phash))
+        db.commit()
+        return db.scalar(select(func.count()).select_from(MlTrial)
+                         .where(MlTrial.research_key == research_key)) or 1
+
+
 def _build_strategy(name: str, params: dict):
     if name not in STRATEGY_REGISTRY:
         raise BacktestConfigError(f"unknown strategy '{name}'")
@@ -170,16 +192,33 @@ def _execute_single_asset(cfg: dict):
         strategy = lambda _df: run_custom_strategy(custom, _df)  # noqa: E731
         diagnostics = {"custom_class": type(custom).__name__,
                        "code_bytes": len(cfg.get("code", "").encode())}
-    elif cfg["strategy"] == "ml_direction":
-        from app.ml.model import run_ml_direction
-        ml = run_ml_direction(df, **(params or {}))
+    elif cfg["strategy"] == "ml_direction" or cfg["strategy"].startswith("ml_"):
+        from app.ml.model import MODEL_FAMILIES, run_ml_direction
+        # `ml_direction` is the xgboost default; `ml_<family>` picks a family.
+        p = dict(params or {})
+        if cfg["strategy"] != "ml_direction":
+            fam = cfg["strategy"][len("ml_"):]
+            if fam not in MODEL_FAMILIES:
+                raise BacktestConfigError(f"unknown ML family '{fam}'")
+            p["model_id"] = fam
+        # Record trials for the Deflated Sharpe multiple-testing correction.
+        n_trials = _record_and_count_trial(cfg, p)
+        ml = run_ml_direction(df, **p)
         signal = ml.signal
         strategy = lambda _df: signal.reindex(_df.index).fillna(0.0)  # noqa: E731
         diagnostics = {
+            "model_id": ml.model_id,
             "oos_accuracy": round(ml.oos_accuracy, 4),
             "n_predictions": ml.n_predictions,
-            "feature_importance": {k: round(v, 4) for k, v in ml.feature_importance.items()},
+            "brier_score": round(ml.brier_score, 4) if ml.brier_score is not None else None,
+            "baseline_oos_accuracy": round(ml.baseline_oos_accuracy, 4)
+                if ml.baseline_oos_accuracy is not None else None,
+            "fold_metrics": ml.fold_metrics,
+            "n_trials": n_trials,
+            "feature_importance": ml.feature_importance,
+            "feature_importance_std": ml.feature_importance_std,
         }
+        cfg = {**cfg, "n_trials": n_trials}  # feed the real N into DSR downstream
     else:
         strategy = _build_strategy(cfg["strategy"], params)
 

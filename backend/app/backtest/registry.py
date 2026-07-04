@@ -116,6 +116,19 @@ def _build_default_registry() -> StrategyRegistry:
                                    defaults=_defaults_of(factory)))
     for cls in CLASSIC_STRATEGIES:
         reg.register_class(cls)
+
+    # ML model catalog: each sklearn/xgboost family is a selectable strategy
+    # (`ml_<family>`) routed through the SAME purged+embargoed+calibrated
+    # pipeline. ml_direction stays as the xgboost default (backward compat).
+    from app.ml.model import MODEL_FAMILIES, ml_direction_strategy
+    for fam, label in MODEL_FAMILIES.items():
+        reg.register(StrategyEntry(
+            key=f"ml_{fam}", kind="single",
+            factory=lambda model_id=fam, **p: ml_direction_strategy(model_id=model_id, **p),
+            description=f"{label} — walk-forward OOS, calibrated, vs logistic baseline",
+            category="ml",
+            defaults={"horizon": 1, "n_splits": 5, "embargo": 0},
+        ))
     return reg
 
 
