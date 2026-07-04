@@ -9,6 +9,12 @@ import { Book, Trade } from "@/lib/live";
 
 function num(s: string) { return Number(s); }
 
+// Adaptive precision so sub-dollar books (ADA/DOGE) aren't flattened to 2dp.
+function fmt(n: number): string {
+  const d = n >= 1000 ? 2 : n >= 1 ? 3 : n >= 0.01 ? 5 : 7;
+  return n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+
 function Ladder({ levels, side, max }: {
   levels: [string, string][]; side: "bid" | "ask"; max: number;
 }) {
@@ -23,7 +29,7 @@ function Ladder({ levels, side, max }: {
           <div key={i} className="relative flex justify-between px-2 py-0.5 text-xs font-mono">
             <div className={`absolute inset-y-0 ${side === "bid" ? "right-0" : "left-0"} ${bar}`}
               style={{ width: `${pct}%` }} />
-            <span className={`relative ${color}`}>{num(price).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+            <span className={`relative ${color}`}>{fmt(num(price))}</span>
             <span className="relative text-slate-400">{num(size).toFixed(4)}</span>
           </div>
         );
@@ -56,14 +62,14 @@ export function LiveOrderBook({ book, tape }: { book: Book | null; tape: Trade[]
       </div>
       <div className="col-span-2 flex items-center justify-center gap-6 py-2 border-y border-border text-xs">
         <span className="text-muted">spread <span className="font-mono text-slate-200">{spread.toFixed(2)}</span></span>
-        <span className="text-muted">mid <span className="font-mono text-accent">{mid.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span></span>
+        <span className="text-muted">mid <span className="font-mono text-accent">{fmt(mid)}</span></span>
       </div>
       <div className="col-span-2">
         <p className="text-[10px] uppercase tracking-wider text-muted mb-1 px-2">Tape</p>
         <div className="max-h-28 overflow-y-auto space-y-0.5">
           {tape.map((t, i) => (
             <div key={i} className="flex justify-between px-2 text-xs font-mono">
-              <span className="text-slate-300">{num(t.price).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+              <span className="text-slate-300">{fmt(num(t.price))}</span>
               <span className="text-muted">{num(t.qty).toFixed(4)}</span>
             </div>
           ))}
@@ -92,7 +98,7 @@ export function VolumeProfile({ assetId }: { assetId: number }) {
         {data.levels.map((l, i) => (
           <div key={i} className="relative flex justify-between px-2 py-0.5 text-xs font-mono">
             <div className="absolute inset-y-0 left-0 bg-accent/10" style={{ width: `${(l.volume / max) * 100}%` }} />
-            <span className="relative text-slate-300">{l.price.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+            <span className="relative text-slate-300">{fmt(l.price)}</span>
             <span className="relative text-muted">{l.volume.toLocaleString()}</span>
           </div>
         ))}
