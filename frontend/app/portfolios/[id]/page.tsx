@@ -7,6 +7,7 @@ import {
 } from "recharts";
 import Guard from "@/components/Guard";
 import ChatPanel from "@/components/ChatPanel";
+import { OnlineUser, PresenceAvatars } from "@/components/Presence";
 import { EmptyState, Skeleton, SkeletonRows } from "@/components/ui";
 import { useToast } from "@/components/ToastProvider";
 import { api } from "@/lib/api";
@@ -25,6 +26,7 @@ function PortfolioDetail() {
   const [ledger, setLedger] = useState<Ledger[]>([]);
   const [equityHistory, setEquityHistory] = useState<EquityPoint[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [online, setOnline] = useState<OnlineUser[]>([]);
   const [flash, setFlash] = useState(false);
 
   // Trade form
@@ -41,28 +43,38 @@ function PortfolioDetail() {
     api<EquityPoint[]>(`/portfolios/${id}/equity-history`).then(setEquityHistory);
   }, [id]);
 
+  const loadPresence = useCallback(() => {
+    api<OnlineUser[]>(`/portfolios/${id}/presence`).then(setOnline).catch(() => {});
+  }, [id]);
+
   useEffect(() => {
     load();
+    loadPresence();
     api<Asset[]>("/assets").then((a) => {
       setAssets(a);
       if (a.length) setAssetId(a[0].id);
     });
-  }, [load]);
+  }, [load, loadPresence]);
 
   // Live shared-ledger sync: when ANY collaborator trades, the hub pushes a
-  // portfolio:{id} event and we refresh + flash the balance.
+  // portfolio:{id} event and we refresh + flash the balance. Presence
+  // join/leave broadcasts refresh only the avatar roster; chat/typing are the
+  // ChatPanel's concern and must NOT trigger a full ledger reload.
   const hubRef = useRef<Hub | null>(null);
   useEffect(() => {
     const hub = new Hub();
     hubRef.current = hub;
     hub.connect();
-    const off = hub.subscribe(`portfolio:${id}`, () => {
+    const off = hub.subscribe(`portfolio:${id}`, (evt: any) => {
+      const t = evt?.type;
+      if (t === "presence") { loadPresence(); return; }
+      if (t === "typing" || t === "chat" || t === "chat_deleted") return;
       setFlash(true);
       setTimeout(() => setFlash(false), 800);
       load();
     });
     return () => { off(); hub.close(); };
-  }, [id, load]);
+  }, [id, load, loadPresence]);
 
   async function trade(e: React.FormEvent) {
     e.preventDefault();
@@ -105,9 +117,12 @@ function PortfolioDetail() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">{pf.name}</h1>
-        <p className="text-sm text-muted">Shared portfolio · live-synced across collaborators</p>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-xl font-semibold">{pf.name}</h1>
+          <p className="text-sm text-muted">Shared portfolio · live-synced across collaborators</p>
+        </div>
+        <PresenceAvatars online={online} />
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">

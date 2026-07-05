@@ -68,7 +68,7 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(...)):
     try:
         while True:
             raw = await websocket.receive_text()
-            await _dispatch(websocket, raw, portfolio_ids, user.id)
+            await _dispatch(websocket, raw, portfolio_ids, user.id, user.username)
     except WebSocketDisconnect:
         pass
     finally:
@@ -100,8 +100,25 @@ async def _heartbeat(portfolio_ids: list[str], user_id) -> None:
     await asyncio.to_thread(lambda: [mark_online(pid, user_id) for pid in portfolio_ids])
 
 
+async def _typing(portfolio_id: str, user_id, username) -> None:
+    """Broadcast a transient 'X is typing' ping to the room. Ephemeral (never
+    stored), member-gated by the caller, and server-capped so a stuck key can't
+    flood the room — the client debounces too."""
+    import asyncio
+
+    from app.services.events import fixed_window_allow, publish_portfolio_event
+
+    def _work():
+        if fixed_window_allow(f"typing:{portfolio_id}:{user_id}", 5, 3):
+            publish_portfolio_event(portfolio_id, {
+                "type": "typing", "portfolio_id": portfolio_id,
+                "user_id": str(user_id), "username": username})
+    await asyncio.to_thread(_work)
+
+
 async def _dispatch(websocket: WebSocket, raw: str,
-                    portfolio_ids: list[str] | None = None, user_id=None) -> None:
+                    portfolio_ids: list[str] | None = None, user_id=None,
+                    username=None) -> None:
     try:
         msg = json.loads(raw)
     except json.JSONDecodeError:
@@ -128,5 +145,10 @@ async def _dispatch(websocket: WebSocket, raw: str,
         if portfolio_ids and user_id is not None:
             await _heartbeat(portfolio_ids, user_id)  # refresh presence TTL
         await websocket.send_text(json.dumps({"type": "pong"}))
+    elif action == "typing":
+        # Fire-and-forget; only for a room the socket actually belongs to.
+        portfolio = msg.get("portfolio")
+        if user_id is not None and portfolio and portfolio in (portfolio_ids or []):
+            await _typing(portfolio, user_id, username)
     else:
         await websocket.send_text(json.dumps({"type": "error", "detail": f"unknown action: {action}"}))

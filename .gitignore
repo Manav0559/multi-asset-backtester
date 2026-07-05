@@ -31,3 +31,4 @@ node_modules/
 
 # macOS Finder "keep both" duplicates
 * 2.*
+frontend/tsconfig.tsbuildinfo
