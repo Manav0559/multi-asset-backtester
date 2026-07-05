@@ -46,6 +46,14 @@ export class Hub {
     }
   }
 
+  // Fire an arbitrary action frame (e.g. {action:"typing", portfolio}). Dropped
+  // silently if the socket isn't open — callers are best-effort (typing pings).
+  emit(action: string, payload: Record<string, any> = {}) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ action, ...payload }));
+    }
+  }
+
   subscribe(channel: string, handler: (data: any) => void) {
     if (!this.handlers.has(channel)) this.handlers.set(channel, new Set());
     this.handlers.get(channel)!.add(handler);

@@ -157,3 +157,30 @@ def test_presence_broadcast_to_subscribed_teammate(client, pres_env):
                     if online == target:
                         break
             assert target in seen, f"never saw both online; got {seen}"
+
+
+def test_typing_ping_broadcasts_to_room(client, pres_env):
+    """A member typing broadcasts an ephemeral 'X is typing' with their username
+    to everyone in the room. Resolved at connect (no per-ping DB hit)."""
+    pid, owner, member = pres_env["pid"], pres_env["owner"], pres_env["member"]
+    chan = f"portfolio:{pid}"
+
+    with client.websocket_connect(f"/ws?token={owner['token']}") as wso:
+        wso.receive_text()  # connected
+        wso.send_text(json.dumps({"action": "subscribe", "channels": [chan]}))
+        assert json.loads(wso.receive_text())["type"] == "subscribed"
+        time.sleep(0.2)
+
+        with client.websocket_connect(f"/ws?token={member['token']}") as wsm:
+            wsm.receive_text()  # connected
+            wsm.send_text(json.dumps({"action": "typing", "portfolio": pid}))
+            # skip presence frames from the joins; assert the typing broadcast
+            typing = None
+            for _ in range(8):
+                frame = json.loads(wso.receive_text())
+                if frame.get("channel") == chan and frame["data"].get("type") == "typing":
+                    typing = frame["data"]
+                    break
+            assert typing is not None, "never received a typing frame"
+            assert typing["user_id"] == str(member["id"])
+            assert typing["username"] == member["username"]
