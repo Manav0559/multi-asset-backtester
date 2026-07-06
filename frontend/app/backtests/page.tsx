@@ -9,6 +9,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import Guard from "@/components/Guard";
+import StrategyPicker, { MlHonestyNote, StrategyEntry, categoryBadge } from "@/components/StrategyPicker";
 import { EmptyState } from "@/components/ui";
 import { useToast } from "@/components/ToastProvider";
 import { api, fetcher } from "@/lib/api";
@@ -19,11 +20,7 @@ type Backtest = {
   deflated_sharpe: string | null; max_drawdown_pct: string | null;
   created_at: string;
 };
-type RegistryEntry = {
-  key: string; kind: "single" | "portfolio"; category: string;
-  description: string; defaults: Record<string, number | string | null>;
-};
-type Registry = { strategies: RegistryEntry[]; custom_template: string };
+type Registry = { strategies: StrategyEntry[]; custom_template: string };
 type SavedStrategy = {
   strategy_id: string; version_id: string; name: string;
   version: number; code: string; created_at: string;
@@ -35,15 +32,6 @@ const TIMEFRAMES = [
   { value: "1h", label: "1 hour" },
   { value: "1d", label: "1 day" },
 ];
-
-const CATEGORY_BADGE: Record<string, string> = {
-  trend: "bg-accent/15 text-accent",
-  mean_reversion: "bg-purple-500/15 text-purple-300",
-  arbitrage: "bg-amber-500/15 text-amber-300",
-  baseline: "bg-slate-500/20 text-slate-300",
-  ml: "bg-emerald-500/15 text-emerald-300",
-  custom: "bg-pink-500/15 text-pink-300",
-};
 
 function BacktestsInner() {
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -114,11 +102,6 @@ function BacktestsInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategy, registry]);
 
-  const grouped = useMemo(() => ({
-    single: strategies.filter((s) => s.kind === "single" && s.key !== "custom_code"),
-    portfolio: strategies.filter((s) => s.kind === "portfolio"),
-  }), [strategies]);
-
   function toggleAsset(id: number) {
     setAssetIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
   }
@@ -188,21 +171,14 @@ function BacktestsInner() {
         </p>
       </div>
 
-      <form onSubmit={submit} className="card p-5 space-y-4">
+      {/* relative z-20: .card's backdrop-blur creates a stacking context, so the
+          picker dropdown's z-index can't escape it — lift the whole form above
+          the sibling results card or the table intercepts the dropdown's clicks. */}
+      <form onSubmit={submit} className="card p-5 space-y-4 relative z-20">
         <div className="flex flex-wrap items-end gap-4">
-          <div className="w-72">
+          <div className="w-96">
             <label className="label">Strategy</label>
-            <select className="input" value={strategy} onChange={(e) => setStrategy(e.target.value)}>
-              <optgroup label="Single-asset">
-                {grouped.single.map((s) => <option key={s.key} value={s.key}>{s.key}</option>)}
-              </optgroup>
-              <optgroup label="Portfolio · long/short · multi-asset">
-                {grouped.portfolio.map((s) => <option key={s.key} value={s.key}>{s.key}</option>)}
-              </optgroup>
-              <optgroup label="Bring your own code">
-                <option value="custom_code">custom_code — write Python</option>
-              </optgroup>
-            </select>
+            <StrategyPicker strategies={strategies} value={strategy} onChange={setStrategy} />
           </div>
 
           {/* Market first: WHERE do you want to backtest? */}
@@ -287,12 +263,14 @@ function BacktestsInner() {
 
         {strat?.description && (
           <p className="text-xs text-muted -mt-1">
-            <span className={`px-1.5 py-0.5 rounded mr-2 ${CATEGORY_BADGE[strat.category] ?? ""}`}>
+            <span className={`px-1.5 py-0.5 rounded mr-2 ${categoryBadge(strat.category)}`}>
               {strat.category}
             </span>
             {strat.description}
           </p>
         )}
+
+        {strat?.category === "ml" && <MlHonestyNote />}
 
         {isCustom && (
           <div className="space-y-3">
