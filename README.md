@@ -26,8 +26,13 @@ wouldn't have had.
 | --- | --- |
 | ![Windowed leaderboard](screenshots/04-leaderboard.png) | ![Consent-based head-to-head competition](screenshots/06-compete.png) |
 
+| | |
+| --- | --- |
+| ![Live Binance order book and trade tape](screenshots/07-orderbook.png) | ![Categorized searchable strategy picker](screenshots/08-picker.png) |
+| ![Inline ML honesty warning](screenshots/09-ml-honesty.png) | ![Team chat with presence avatars and typing](screenshots/10-chat-presence.png) |
+
 > Screenshots are generated, not hand-taken: `./scripts/demo.sh` then
-> `cd frontend && node scripts/capture-screenshots.mjs` re-captures all five
+> `cd frontend && node scripts/capture-screenshots.mjs` re-captures all of them
 > against the seeded stack (headless system Chrome via Playwright).
 
 ---
@@ -179,6 +184,27 @@ lints the frontend on every push.
 - **Grafana is fully provisioned from the repo** — datasource + dashboard JSON
   under `observability/grafana/`; nothing is clicked together by hand.
 - Redis-backed fixed-window rate limiter (120 req/min, **fails open**).
+
+---
+
+## Data provenance
+
+Every price on screen is labeled with where it came from. Nothing is fabricated:
+if a surface can't be streamed live, it says so on the surface itself, and a
+global banner appears the moment the live link drops (auto-reconnects).
+
+| Surface | Source | Freshness | Badge |
+| --- | --- | --- | --- |
+| Crypto price, order book, trade tape | Binance WS (`@trade`, `@depth20@100ms`, `@kline`) | real-time push | `LIVE` |
+| Equity price during market hours | yfinance poll (beat task, exchange-calendar-aware) | vendor-delayed ~15 min | `DELAYED ~15m` |
+| Equity price outside market hours | last stored session close | prior session | `LAST SESSION` |
+| Equity "depth" | volume-at-price profile reconstructed from stored bars | prior session | `LAST SESSION` |
+| Portfolio equity curves, leaderboard, compete | ledger replay, positions marked at stored closes | as-of last close | `MARKED AT LAST CLOSE` |
+| Historical bars (charts, backtests) | yfinance (equities: 5y 1d + tiered intraday) · Binance REST (crypto: 1d/1h/15m/1m) | static backfill | — |
+
+Crypto is the **only** live surface; there is no fake equity order book and no
+simulated feed pretending to be real. (Planned: Kite Connect L2 for NSE when
+credentials exist — env-gated, and clearly SIMULATED-badged otherwise.)
 
 ---
 

@@ -78,24 +78,44 @@ def login_or_register(u: dict) -> str:
 
 
 # ----------------------------------------------------------------- data --
+_ANCHORS = ("AAPL", "MSFT", "BTCUSDT", "ADAUSDT")
+
+
 def backfill_market_data() -> dict[str, int]:
     """The full universe (NASDAQ-100 + NIFTY 50 + top crypto, incl. intraday)
-    via scripts/backfill_universe.py. Returns the asset ids the demo trades."""
-    from sqlalchemy import select
+    via scripts/backfill_universe.py — SKIPPED when the anchors already have
+    bars, so re-seeding an existing stack is additive instead of re-walking
+    154 symbols (murderously slow on a loaded box). Returns the asset ids the
+    demo trades."""
+    from sqlalchemy import func, select
 
     from app.db.session import SessionLocal
-    from scripts.backfill_universe import main as backfill_universe
+    from app.models import Asset, OhlcvBar
 
-    backfill_universe()
+    def _resolve(db) -> dict[str, int] | None:
+        ids: dict[str, int] = {}
+        for symbol in _ANCHORS:
+            aid = db.scalar(select(Asset.id).where(Asset.symbol == symbol))
+            if aid is None or not db.scalar(
+                    select(func.count()).select_from(OhlcvBar)
+                    .where(OhlcvBar.asset_id == aid)):
+                return None
+            ids[symbol] = aid
+        return ids
 
-    from app.models import Asset
-    ids: dict[str, int] = {}
     with SessionLocal() as db:
-        for symbol in ("AAPL", "MSFT", "BTCUSDT"):
-            ids[symbol] = db.scalar(select(Asset.id).where(Asset.symbol == symbol))
-            if ids[symbol] is None:
-                raise SystemExit(f"FATAL {symbol} missing after universe backfill — "
-                                 "network blocked? Try again or check egress.")
+        ids = _resolve(db)
+    if ids is not None:
+        print("    universe already present — skipping backfill (additive mode)")
+        return ids
+
+    from scripts.backfill_universe import main as backfill_universe
+    backfill_universe()
+    with SessionLocal() as db:
+        ids = _resolve(db)
+    if ids is None:
+        raise SystemExit("FATAL anchor symbols missing after universe backfill — "
+                         "network blocked? Try again or check egress.")
     return ids
 
 
@@ -148,11 +168,11 @@ def run_backtest(token: str, label: str, payload: dict, timeout_s: int = 300) ->
 def main() -> None:
     wait_for_api()
 
-    print("1/4 market data (real history):")
+    print("1/6 market data (real history):")
     ids = backfill_market_data()
-    aapl, msft, btc = ids["AAPL"], ids["MSFT"], ids["BTCUSDT"]
+    aapl, msft, btc, ada = ids["AAPL"], ids["MSFT"], ids["BTCUSDT"], ids["ADAUSDT"]
 
-    print("2/4 demo users + shared public portfolios:")
+    print("2/6 demo users + shared public portfolios:")
     alice = login_or_register(USERS[0])
     bob = login_or_register(USERS[1])
     p_alice = ensure_portfolio(alice, "Alpha Capital", "100000.00")
@@ -160,7 +180,7 @@ def main() -> None:
     print(f"  alice_demo -> Alpha Capital ({p_alice[:8]})")
     print(f"  bob_demo   -> Beta Fund     ({p_bob[:8]})")
 
-    print("3/4 trades through the order API:")
+    print("3/6 trades through the order API:")
     if call(f"/portfolios/{p_alice}/positions", token=alice):
         print("    positions already exist — skipping (idempotent re-run)")
     else:
@@ -170,7 +190,7 @@ def main() -> None:
         trade(bob, p_bob, btc, "buy", "0.4")
         trade(bob, p_bob, aapl, "buy", "25")
 
-    print("4/4 one backtest of each kind (through the Celery worker):")
+    print("4/6 one backtest of each kind (through the Celery worker):")
     template = call("/strategies/registry", token=alice)["custom_template"]  # type: ignore[index]
     run_backtest(alice, "classic: sma_crossover", {
         "strategy": "sma_crossover", "asset_id": aapl,
@@ -183,9 +203,10 @@ def main() -> None:
     run_backtest(alice, "byoc: custom_code", {
         "strategy": "custom_code", "asset_id": msft, "code": template, "params": {}})
 
-    print("5/5 social: shared portfolio + chat + a live competition:")
+    print("5/6 social: shared portfolio + chat + a live competition:")
     if call("/challenges", token=alice):
         print("    social data already present — skipping (idempotent re-run)")
+        p_shared = ensure_portfolio(alice, "The Syndicate", "50000.00")
     else:
         # A shared portfolio both trade in (invite -> accept), with team chat.
         p_shared = ensure_portfolio(alice, "The Syndicate", "50000.00")
@@ -205,6 +226,27 @@ def main() -> None:
         call(f"/challenges/{ch['id']}/accept", "POST",  # type: ignore[index]
              {"opponent_portfolio_id": p_bob}, token=bob)
         print(f"    competition active: alice_demo (Alpha) vs bob_demo (Beta), 7d")
+
+    # A LIVE-ticking crypto position in the shared book, so the portfolio and
+    # dashboard demo real streamed prices (ADA is the liveliest small-price
+    # symbol — sub-dollar moves are visible at 5-decimal precision).
+    positions = call(f"/portfolios/{p_shared}/positions", token=alice)
+    if any(p["asset_id"] == ada for p in positions):  # type: ignore[union-attr]
+        print("    live-symbol position already present — skipping")
+    else:
+        trade(alice, p_shared, ada, "buy", "100")
+
+    print("6/6 ML catalog — one backtest per family (skips families already run):")
+    done = {(b.get("config") or {}).get("strategy")
+            for b in call("/backtests", token=alice)  # type: ignore[union-attr]
+            if b["status"] == "completed"}
+    for fam in ("ml_logistic_regression", "ml_decision_tree", "ml_random_forest",
+                "ml_extra_trees", "ml_gradient_boosting", "ml_mlp", "ml_xgboost"):
+        if fam in done:
+            print(f"    {fam:<28} already completed — skipping")
+            continue
+        run_backtest(alice, f"ml: {fam}", {"strategy": fam, "asset_id": aapl,
+                                           "params": {}}, timeout_s=600)
 
     front = os.environ.get("FRONTEND_URL", "http://localhost:3000")
     print("\n✔ demo ready")
