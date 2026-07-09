@@ -35,6 +35,15 @@ celery_app.conf.update(
     accept_content=["json"],
     task_track_started=True,
     worker_max_tasks_per_child=20,   # recycle workers to bound memory creep
+    # Long tasks: a child must never hoard queued work while it grinds — with
+    # the default (4x) a 10-minute backtest holds 3 other jobs hostage.
+    worker_prefetch_multiplier=1,
+    # RSS-based recycle (kB), checked AFTER each task completes: a child that
+    # finished bloated is retired instead of fragmenting the next job. This
+    # complements (never replaces) the RLIMIT_AS hard cap, which stops a task
+    # DURING its run. Measured envelope: ML families peak <300MB RSS, so 1.5GB
+    # means only a genuinely leaky child gets recycled.
+    worker_max_memory_per_child=1_500_000,
     # Runaway-job kill switch (infinite loop in BYOC code, hung data fetch):
     # soft limit raises SoftTimeLimitExceeded inside the task 30s before the
     # hard limit SIGKILLs the prefork child. RLIMIT_AS bounds memory; this
