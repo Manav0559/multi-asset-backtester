@@ -15,7 +15,7 @@ from app.db.session import get_db
 from app.models import Order, PortfolioMember, User
 from app.models.enums import PortfolioRole
 from app.schemas.trading import OrderCreate, OrderOut, OrderResult
-from app.services.events import publish_portfolio_event
+from app.services.events import mark_outbox_published, publish_portfolio_event
 from app.services.execution import ExecutionError, execute_market_order
 
 router = APIRouter(prefix="/portfolios/{portfolio_id}", tags=["orders"])
@@ -36,11 +36,18 @@ def place_order(portfolio_id: uuid.UUID, body: OrderCreate,
                             detail=str(exc)) from exc
 
     # Publish AFTER commit: a rolled-back trade never reaches a teammate's UI.
-    # Attribution (E5c): stamp the actor's username so a teammate's feed reads
-    # "alice bought AAPL", not a bare user id.
-    event = result.to_event(portfolio_id, member.user_id, body.asset_id, body.side)
-    event["username"] = db.scalar(select(User.username).where(User.id == member.user_id))
-    publish_portfolio_event(portfolio_id, event)
+    # Fills publish the OUTBOX payload (committed with the ledger entry, actor
+    # username already stamped) and then mark the row — if we die between
+    # commit and here, the beat relay re-publishes it. Rejects are ephemeral:
+    # fast-path only.
+    if result.event is not None:
+        publish_portfolio_event(portfolio_id, result.event)
+        if result.outbox_id is not None:
+            mark_outbox_published(result.outbox_id)
+    else:
+        event = result.to_event(portfolio_id, member.user_id, body.asset_id, body.side)
+        event["username"] = db.scalar(select(User.username).where(User.id == member.user_id))
+        publish_portfolio_event(portfolio_id, event)
     return OrderResult(
         order_id=result.order_id, status=result.status.value, reason=result.reason,
         fill_price=result.fill_price, filled_qty=result.filled_qty,

@@ -45,3 +45,55 @@ def fixed_window_allow(key: str, limit: int, window_s: int) -> bool:
         return n <= limit
     except redis.RedisError:
         return True
+
+
+# ---------------------------------------------------------------- outbox --
+def mark_outbox_published(outbox_id: int) -> None:
+    """Fast-path bookkeeping after a successful publish. Its own tiny
+    transaction; if THIS write is lost to a crash the relay re-publishes the
+    event — at-least-once, and consumers dedupe by order_id/version."""
+    from sqlalchemy import func, update
+
+    from app.db.session import SessionLocal
+    from app.models import OutboxEvent
+
+    with SessionLocal() as db:
+        db.execute(update(OutboxEvent).where(OutboxEvent.id == outbox_id)
+                   .values(published_at=func.now()))
+        db.commit()
+
+
+def relay_outbox(limit: int = 500, retain_days: int = 7) -> dict:
+    """Sweep unpublished outbox rows (a process died between DB commit and its
+    Redis publish) and re-publish them in id order. SKIP LOCKED so concurrent
+    relays never double-publish a row. Also prunes published rows older than
+    `retain_days` so the table can't grow without bound."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import delete, select
+
+    from app.db.session import SessionLocal
+    from app.models import OutboxEvent
+
+    published = 0
+    with SessionLocal() as db:
+        rows = db.execute(
+            select(OutboxEvent).where(OutboxEvent.published_at.is_(None))
+            .order_by(OutboxEvent.id).limit(limit)
+            .with_for_update(skip_locked=True)
+        ).scalars().all()
+        now = datetime.now(timezone.utc)  # a real datetime, NOT func.now():
+        # the prune DELETE below synchronizes the session by EVALUATING its
+        # WHERE clause against in-memory rows, and a SQL clause can't be
+        # boolean-compared in Python.
+        for row in rows:
+            _client().publish(row.channel, json.dumps(row.payload))
+            row.published_at = now
+            published += 1
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retain_days)
+        pruned = db.execute(
+            delete(OutboxEvent).where(OutboxEvent.published_at.isnot(None),
+                                      OutboxEvent.published_at < cutoff)
+        ).rowcount
+        db.commit()
+    return {"published": published, "pruned": pruned}
