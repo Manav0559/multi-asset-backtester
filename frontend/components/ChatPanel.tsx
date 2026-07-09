@@ -32,6 +32,7 @@ export default function ChatPanel({ portfolioId }: { portfolioId: string }) {
     me.current = currentUserId();
     api<{ messages: Msg[] }>(`/portfolios/${portfolioId}/chat`)
       .then((p) => setMsgs([...p.messages].reverse())) // oldest-first for display
+      .catch(() => {})
       .finally(() => setLoaded(true));
 
     const hub = new Hub();
