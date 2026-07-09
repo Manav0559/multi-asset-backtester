@@ -180,3 +180,17 @@ def test_windowed_leaderboard_without_snapshots_degrades_to_all_time(client, np_
 
     assert results["24h"] == results["all"]
     assert results["7d"] == results["all"]
+
+
+def test_worker_hardening_config():
+    """The worker's self-defense flags stay pinned — a regression here is
+    silent until a production incident (task hoarding, leaky-child bloat)."""
+    from app.backtest.tasks import celery_app
+
+    c = celery_app.conf
+    assert c.worker_prefetch_multiplier == 1          # long tasks never hoard
+    assert c.worker_max_tasks_per_child == 20         # bound fragmentation creep
+    assert c.worker_max_memory_per_child == 1_500_000  # retire bloated children
+    assert c.task_acks_late is True
+    assert c.task_reject_on_worker_lost is True
+    assert c.task_time_limit == 600 and c.task_soft_time_limit == 570
