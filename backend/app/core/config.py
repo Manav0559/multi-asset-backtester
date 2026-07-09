@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     # with an actionable 422 instead of OOM-killing after minutes in the worker.
     BACKTEST_MAX_WORKING_SET_MB: int = 1024
 
+    # WS hub heartbeat: clients treat ~3 missed beats as a dead link (show the
+    # banner + force reconnect) and an epoch change as "hub restarted — resync".
+    HUB_HEARTBEAT_SECONDS: float = 15.0
+
     # Windowed leaderboard: how often the Celery beat task snapshots equity.
     EQUITY_SNAPSHOT_INTERVAL_MINUTES: int = 5
 

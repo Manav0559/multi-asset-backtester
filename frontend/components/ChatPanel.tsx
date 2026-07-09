@@ -52,6 +52,12 @@ export default function ChatPanel({ portfolioId }: { portfolioId: string }) {
         setMsgs((m) => m.map((x) => x.id === evt.id ? { ...x, deleted: true, body: "" } : x));
       } else if (evt?.type === "typing" && evt.user_id !== me.current) {
         setTypers((t) => ({ ...t, [evt.user_id]: { username: evt.username, at: Date.now() } }));
+      } else if (evt?.type === "resync") {
+        // Hub epoch changed (server restarted) — messages may have been missed
+        // while our socket thought it was fine. Refetch history.
+        api<{ messages: Msg[] }>(`/portfolios/${portfolioId}/chat`)
+          .then((p) => setMsgs([...p.messages].reverse()))
+          .catch(() => {});
       }
     });
     return () => { off(); hub.close(); hubRef.current = null; };

@@ -29,12 +29,18 @@ export function anyHubDown(): boolean {
   return snapshotDown;
 }
 
+// ~3 missed 15s heartbeats: the link is dead even if TCP hasn't noticed.
+const HB_STALE_MS = 45_000;
+
 export class Hub {
   private ws: WebSocket | null = null;
   private handlers = new Map<string, Set<(data: any) => void>>();
   private desired = new Set<string>();
   private reconnectTimer: any = null;
   private closed = false; // intentional close — don't reconnect or report down
+  private epoch: string | null = null;
+  private lastHb = 0;
+  private hbWatchdog: any = null;
 
   connect() {
     const token = getAccess();
@@ -47,15 +53,37 @@ export class Hub {
     this.ws.onopen = () => {
       downHubs.delete(this);
       emitStatus();
+      this.lastHb = Date.now(); // arm the watchdog from a fresh baseline
       if (this.desired.size) this.send("subscribe", [...this.desired]);
     };
     this.ws.onmessage = (ev) => {
       const msg: HubMessage = JSON.parse(ev.data);
       if (msg.type === "message" && msg.channel) {
         this.handlers.get(msg.channel)?.forEach((h) => h(msg.data));
+      } else if (msg.type === "hb") {
+        this.lastHb = Date.now();
+        const epoch = (msg as any).epoch as string;
+        if (this.epoch && epoch !== this.epoch) {
+          // The hub restarted while our socket auto-reconnected: anything we
+          // knew may be stale. Tell every consumer to refetch — pages treat
+          // unknown portfolio events as "reload", so this Just Works there.
+          this.handlers.forEach((hs) => hs.forEach((h) => h({ type: "resync" })));
+        }
+        this.epoch = epoch;
       }
     };
     this.ws.onclose = () => this.scheduleReconnect();
+
+    // Silent-gap watchdog: heartbeats stopped but the socket still "looks"
+    // open — surface the banner and force the reconnect path.
+    if (!this.hbWatchdog) {
+      this.hbWatchdog = setInterval(() => {
+        if (this.closed || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        if (this.lastHb && Date.now() - this.lastHb > HB_STALE_MS) {
+          this.ws.close(); // triggers onclose -> banner + retry loop
+        }
+      }, 10_000);
+    }
   }
 
   private scheduleReconnect() {
@@ -102,6 +130,7 @@ export class Hub {
   close() {
     this.closed = true;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    if (this.hbWatchdog) { clearInterval(this.hbWatchdog); this.hbWatchdog = null; }
     downHubs.delete(this);
     emitStatus();
     this.ws?.close();
