@@ -45,3 +45,51 @@ SNAPSHOT_LAST_SUCCESS = Gauge(
     # prefork: each child writes its own mmap value; scrape takes the newest.
     multiprocess_mode="max",
 )
+
+# ---- WS fan-out fabric (the previously-invisible layer) --------------------
+WS_CLIENTS = Gauge(
+    "ws_connected_clients",
+    "WebSocket clients currently connected to this hub process",
+    multiprocess_mode="livesum",
+)
+
+WS_CONFLATED = Counter(
+    "ws_conflated_frames_total",
+    "Frames dropped by conflation (a newer frame replaced an undelivered one "
+    "for a slow client) — by design for market data, but a rate spike means "
+    "clients are falling behind",
+    ["channel_class"],  # tick | depth | bar — fixed set
+)
+
+WS_OVERFLOW_DISCONNECTS = Counter(
+    "ws_disconnects_overflow_total",
+    "Clients disconnected because their must-deliver queue overflowed — each "
+    "one had to full-resync over REST",
+)
+
+# ---- DB pool saturation (precedes every latency spike) ---------------------
+DB_POOL_CHECKED_OUT = Gauge(
+    "db_pool_checked_out",
+    "SQLAlchemy connections currently checked out of the pool",
+    multiprocess_mode="livesum",
+)
+
+DB_POOL_SIZE = Gauge(
+    "db_pool_size",
+    "Configured SQLAlchemy pool size (for saturation ratio alerts)",
+    multiprocess_mode="max",
+)
+
+# ---- async backlog (the honest backpressure signals) ------------------------
+CELERY_QUEUE_DEPTH = Gauge(
+    "celery_queue_depth",
+    "Tasks waiting in the Celery broker queue (sampled by the outbox relay beat)",
+    multiprocess_mode="mostrecent",
+)
+
+OUTBOX_PENDING = Gauge(
+    "outbox_pending_events",
+    "Outbox rows not yet published — should drain within one relay tick; "
+    "sustained >0 means the relay is dead or Redis is unreachable",
+    multiprocess_mode="mostrecent",
+)
