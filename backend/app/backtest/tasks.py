@@ -170,7 +170,32 @@ def relay_outbox_task() -> dict:
     if out["published"]:
         logger.warning("outbox relay re-published %d event(s) missed by a "
                        "crashed fast path", out["published"])
+    _sample_ops_gauges()   # piggyback: this beat already ticks every 10s
     return out
+
+
+def _sample_ops_gauges() -> None:
+    """Backlog gauges: broker queue depth + unpublished outbox rows. Failure
+    to sample must never fail the relay — these are telemetry, not truth."""
+    from app.core.metrics import CELERY_QUEUE_DEPTH, OUTBOX_PENDING
+
+    try:
+        import redis as _redis
+        broker = _redis.from_url(settings.CELERY_BROKER_URL)
+        CELERY_QUEUE_DEPTH.set(broker.llen("celery"))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from sqlalchemy import func, select
+
+        from app.db.session import SessionLocal
+        from app.models import OutboxEvent
+        with SessionLocal() as db:
+            OUTBOX_PENDING.set(db.scalar(
+                select(func.count()).select_from(OutboxEvent)
+                .where(OutboxEvent.published_at.is_(None))) or 0)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @celery_app.task(name="backtest.reap_dead")

@@ -58,3 +58,51 @@ groups:
           description: >-
             No successful snapshot beat tick for 15+ minutes — windowed
             leaderboards are drifting. Check the worker (-B) container.
+
+      - alert: CeleryQueueBacklog
+        # Sampled by the 10s relay beat. Sustained depth means the worker pool
+        # can't keep up (or died with beat still queueing).
+        expr: max(celery_queue_depth) > 20
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: "Celery queue backlog is growing"
+          description: "{{ $value }} tasks waiting for 10m+ — check worker health/capacity."
+
+      - alert: OutboxRelayStuck
+        # The relay drains pending rows every 10s. Rows pending for 5 minutes
+        # mean the relay is dead or Redis publish is failing — teammates are
+        # missing live fill events right now.
+        expr: max(outbox_pending_events) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Outbox events are stuck unpublished"
+          description: "Ledger events committed but not reaching collaborators — check the relay beat + Redis."
+
+  - name: backtester-fabric
+    rules:
+      - alert: DBPoolNearSaturation
+        # Checked-out / configured size. Sustained >80% precedes request
+        # queueing and timeout storms; scale the pool or find the leak.
+        expr: |
+          sum(db_pool_checked_out) / sum(db_pool_size) > 0.8
+        for: 5m
+        labels:
+          severity: warn
+        annotations:
+          summary: "SQLAlchemy pool nearly saturated"
+          description: "{{ $value | humanizePercentage }} of connections checked out for 5m+."
+
+      - alert: WSOverflowDisconnects
+        # Any client severed for must-deliver overflow is a resync storm risk;
+        # a nonzero RATE means it's happening repeatedly.
+        expr: rate(ws_disconnects_overflow_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warn
+        annotations:
+          summary: "WebSocket clients dropped for backpressure overflow"
+          description: "Slow consumers are overflowing must-deliver queues — check client health or raise the bound."

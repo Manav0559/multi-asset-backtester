@@ -39,6 +39,7 @@ from collections import defaultdict, deque
 
 from fastapi import WebSocket
 
+from app.core.metrics import WS_CLIENTS, WS_CONFLATED, WS_OVERFLOW_DISCONNECTS
 from app.streaming.bus import TickBus
 
 logger = logging.getLogger("streaming.hub")
@@ -74,8 +75,12 @@ class _Sender:
 
     def offer(self, channel: str, frame: str) -> None:
         if _is_conflatable(channel):
+            if channel in self._conflated:     # an undelivered frame is replaced
+                WS_CONFLATED.labels(channel.split(":", 1)[0]).inc()
             self._conflated[channel] = frame   # overwrite: keep only latest
         elif len(self._must) >= _MUST_DELIVER_MAX:
+            if not self.overflowed:            # count the client once, not per frame
+                WS_OVERFLOW_DISCONNECTS.inc()
             self.overflowed = True             # can't keep up with must-deliver
         else:
             self._must.append(frame)
@@ -142,6 +147,7 @@ class ConnectionManager:
         sender = _Sender(ws)
         self._senders[ws] = sender
         self._sender_tasks[ws] = asyncio.create_task(sender.run(), name="ws-sender")
+        WS_CLIENTS.inc()
 
     async def disconnect(self, ws: WebSocket) -> None:
         async with self._lock:
@@ -156,6 +162,7 @@ class ConnectionManager:
         sender = self._senders.pop(ws, None)
         if sender:
             sender.closed = True
+            WS_CLIENTS.dec()   # paired with connect(); pop guards double-dec
         task = self._sender_tasks.pop(ws, None)
         if task:
             task.cancel()
