@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     BACKTEST_TIME_LIMIT_S: int = 600
     BACKTEST_RISK_FREE_RATE: float = 0.0  # annual, for Sharpe/Sortino
     BACKTEST_DEFAULT_TRIALS: int = 1      # strategy variants tried, for Deflated Sharpe
+    # Admission control: max ESTIMATED working set a job may claim. A policy
+    # cap far under the RLIMIT_AS backstop — reject in milliseconds at submit
+    # with an actionable 422 instead of OOM-killing after minutes in the worker.
+    BACKTEST_MAX_WORKING_SET_MB: int = 1024
 
     # Windowed leaderboard: how often the Celery beat task snapshots equity.
     EQUITY_SNAPSHOT_INTERVAL_MINUTES: int = 5
