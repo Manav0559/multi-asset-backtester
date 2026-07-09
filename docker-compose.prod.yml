@@ -1,0 +1,116 @@
+# Production overlay — apply ON TOP of the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile app up -d
+#
+# What it changes and why:
+#   * Network isolation: `data` is internal (db+redis are unreachable from the
+#     host and have no egress); app services straddle app+data; only frontend/
+#     grafana sit on `edge` for a future reverse proxy.
+#   * db/redis host ports UNPUBLISHED (`!reset`) — dev convenience, prod hole.
+#   * Resource limits on every service: a leaky worker gets OOM-killed inside
+#     its own budget instead of taking the box down. The worker's limit keeps
+#     a ~2GB gap above RLIMIT_AS(4G)? No — RLIMIT_AS is ADDRESS SPACE (mmap
+#     heavy, ~4G) while the 6G container limit bounds real RSS; rlimit fires
+#     first with a Python traceback, cgroup OOM is the backstop.
+#   * redis: noeviction — an evicting Celery broker silently corrupts task
+#     semantics; cap memory explicitly instead.
+#   * postgres: modest shared_buffers bump; synchronous_commit stays ON (this
+#     is a ledger — never trade durability for latency here).
+#   * json-file log rotation everywhere; restart: unless-stopped everywhere.
+#
+# NOT here (deliberate): TLS/domain termination (belongs to the host's proxy),
+# secrets (env_file per deployment), backups (Tier B: nightly pg_dump + WAL
+# archiving + a TESTED restore drill — see HANDOFF roadmap).
+
+networks:
+  edge: {}
+  app: {}
+  data:
+    internal: true
+
+x-logging: &logrotate
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+services:
+  db:
+    networks: [data]
+    ports: !reset []
+    command:
+      - postgres
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - effective_cache_size=3GB
+      - -c
+      - synchronous_commit=on
+    deploy:
+      resources:
+        limits: {memory: 4g, cpus: "4"}
+    logging: *logrotate
+    restart: unless-stopped
+
+  redis:
+    networks: [data]
+    ports: !reset []
+    command: ["redis-server", "--maxmemory", "1gb",
+              "--maxmemory-policy", "noeviction"]
+    deploy:
+      resources:
+        limits: {memory: 1536m, cpus: "1"}
+    logging: *logrotate
+    restart: unless-stopped
+
+  migrate:
+    networks: [data]
+    logging: *logrotate
+
+  backend:
+    networks: [app, data]
+    deploy:
+      resources:
+        limits: {memory: 2g, cpus: "2"}
+    logging: *logrotate
+    restart: unless-stopped
+
+  worker:
+    networks: [app, data]
+    deploy:
+      resources:
+        limits: {memory: 6g, cpus: "4"}
+    logging: *logrotate
+    restart: unless-stopped
+
+  ticker:
+    networks: [app, data]
+    deploy:
+      resources:
+        limits: {memory: 512m, cpus: "1"}
+    logging: *logrotate
+    restart: unless-stopped
+
+  frontend:
+    networks: [edge, app]
+    deploy:
+      resources:
+        limits: {memory: 1g, cpus: "1"}
+    logging: *logrotate
+    restart: unless-stopped
+
+  prometheus:
+    networks: [app]
+    deploy:
+      resources:
+        limits: {memory: 1g, cpus: "1"}
+    logging: *logrotate
+    restart: unless-stopped
+
+  grafana:
+    networks: [edge, app]
+    deploy:
+      resources:
+        limits: {memory: 512m, cpus: "1"}
+    logging: *logrotate
+    restart: unless-stopped
