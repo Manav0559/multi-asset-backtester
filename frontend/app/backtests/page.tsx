@@ -65,7 +65,7 @@ function BacktestsInner() {
   const isCustom = strategy === "custom_code";
 
   function load() {
-    api<Backtest[]>("/backtests").then(setList);
+    api<Backtest[]>("/backtests").then(setList).catch(() => {});
   }
   const marketAssets = useMemo(() => assetsOfMarket(assets, market), [assets, market]);
 
@@ -75,7 +75,7 @@ function BacktestsInner() {
       const scoped = assetsOfMarket(a, "nasdaq");
       if (scoped.length) setAssetId(scoped[0].id);
       setAssetIds(scoped.slice(0, 2).map((x) => x.id));  // sensible default basket
-    });
+    }).catch(() => {});
     load();
   }, []);
 

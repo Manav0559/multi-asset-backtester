@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import ConnectionBanner from "@/components/ConnectionBanner";
 import ToastProvider from "@/components/ToastProvider";
 
 export const metadata: Metadata = {
@@ -19,6 +20,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <div className="absolute -top-24 right-[-10rem] h-[28rem] w-[28rem] rounded-full
                           bg-accent2/[0.07] blur-3xl animate-drift [animation-delay:-9s]" />
         </div>
+        <ConnectionBanner />
         <ToastProvider>{children}</ToastProvider>
       </body>
     </html>

@@ -8,6 +8,7 @@
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import Guard from "@/components/Guard";
+import ProvenanceBadge from "@/components/ProvenanceBadge";
 import { EmptyState } from "@/components/ui";
 import { useToast } from "@/components/ToastProvider";
 import { api, fetcher } from "@/lib/api";
@@ -173,9 +174,11 @@ function CompeteInner() {
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-semibold">Compete</h1>
-        <p className="text-sm text-muted">
+        <p className="text-sm text-muted flex items-center gap-2 flex-wrap">
           Head-to-head, consent-based. You each pick a portfolio and see only the other&apos;s
           performance curve — never their positions or trades.
+          <ProvenanceBadge provenance="last_session" label="MARKED AT LAST CLOSE"
+            title="Curves replay each portfolio's ledger with positions valued at stored closes — not a live mark" />
         </p>
       </div>
 

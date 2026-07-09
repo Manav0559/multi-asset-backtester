@@ -12,8 +12,8 @@ const STYLE: Record<Provenance, { label: string; cls: string; dot?: boolean }> =
   unknown: { label: "—", cls: "bg-slate-600/20 text-muted border-border" },
 };
 
-export default function ProvenanceBadge({ provenance, title }: {
-  provenance: Provenance; title?: string;
+export default function ProvenanceBadge({ provenance, title, label }: {
+  provenance: Provenance; title?: string; label?: string;
 }) {
   const s = STYLE[provenance] ?? STYLE.unknown;
   return (
@@ -21,7 +21,7 @@ export default function ProvenanceBadge({ provenance, title }: {
       className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[10px]
                   font-medium tracking-wide ${s.cls}`}>
       {s.dot && <span className="h-1.5 w-1.5 rounded-full bg-up animate-pulse" />}
-      {s.label}
+      {label ?? s.label}
     </span>
   );
 }

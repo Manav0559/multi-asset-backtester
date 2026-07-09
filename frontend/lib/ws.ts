@@ -6,11 +6,35 @@ import { getAccess } from "./auth";
 // subscribe/unsubscribe, and dispatches relayed messages by channel.
 export type HubMessage = { type: string; channel?: string; data?: any };
 
+// ---- global connection health -------------------------------------------
+// Pages create several Hubs (live prices, portfolio room, chat); if the
+// backend drops they all drop. A module-level registry tracks which hubs are
+// disconnected-but-wanted so ConnectionBanner can show ONE honest
+// "reconnecting" strip instead of every consumer inventing its own.
+const downHubs = new Set<Hub>();
+const statusListeners = new Set<() => void>();
+let snapshotDown = false;
+
+function emitStatus() {
+  snapshotDown = downHubs.size > 0;
+  statusListeners.forEach((l) => l());
+}
+
+export function subscribeConnectionStatus(cb: () => void): () => void {
+  statusListeners.add(cb);
+  return () => statusListeners.delete(cb);
+}
+
+export function anyHubDown(): boolean {
+  return snapshotDown;
+}
+
 export class Hub {
   private ws: WebSocket | null = null;
   private handlers = new Map<string, Set<(data: any) => void>>();
   private desired = new Set<string>();
   private reconnectTimer: any = null;
+  private closed = false; // intentional close — don't reconnect or report down
 
   connect() {
     const token = getAccess();
@@ -21,6 +45,8 @@ export class Hub {
     this.ws = new WebSocket(`${proto}://${host}/ws?token=${token}`);
 
     this.ws.onopen = () => {
+      downHubs.delete(this);
+      emitStatus();
       if (this.desired.size) this.send("subscribe", [...this.desired]);
     };
     this.ws.onmessage = (ev) => {
@@ -33,6 +59,9 @@ export class Hub {
   }
 
   private scheduleReconnect() {
+    if (this.closed) return;
+    downHubs.add(this);
+    emitStatus();
     if (this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -71,6 +100,10 @@ export class Hub {
   }
 
   close() {
+    this.closed = true;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    downHubs.delete(this);
+    emitStatus();
     this.ws?.close();
     this.ws = null;
   }

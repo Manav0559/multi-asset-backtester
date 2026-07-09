@@ -7,6 +7,7 @@ import {
 } from "recharts";
 import Guard from "@/components/Guard";
 import ChatPanel from "@/components/ChatPanel";
+import ProvenanceBadge from "@/components/ProvenanceBadge";
 import { OnlineUser, PresenceAvatars } from "@/components/Presence";
 import { EmptyState, Skeleton, SkeletonRows } from "@/components/ui";
 import { useToast } from "@/components/ToastProvider";
@@ -37,10 +38,12 @@ function PortfolioDetail() {
   const toast = useToast();
 
   const load = useCallback(() => {
-    api<Portfolio>(`/portfolios/${id}`).then(setPf);
-    api<Position[]>(`/portfolios/${id}/positions`).then(setPositions);
-    api<Ledger[]>(`/portfolios/${id}/ledger`).then(setLedger);
-    api<EquityPoint[]>(`/portfolios/${id}/equity-history`).then(setEquityHistory);
+    // Swallow fetch failures: during a WS/server drop the ConnectionBanner is
+    // the UX — pages keep their last data instead of throwing.
+    api<Portfolio>(`/portfolios/${id}`).then(setPf).catch(() => {});
+    api<Position[]>(`/portfolios/${id}/positions`).then(setPositions).catch(() => {});
+    api<Ledger[]>(`/portfolios/${id}/ledger`).then(setLedger).catch(() => {});
+    api<EquityPoint[]>(`/portfolios/${id}/equity-history`).then(setEquityHistory).catch(() => {});
   }, [id]);
 
   const loadPresence = useCallback(() => {
@@ -53,7 +56,7 @@ function PortfolioDetail() {
     api<Asset[]>("/assets").then((a) => {
       setAssets(a);
       if (a.length) setAssetId(a[0].id);
-    });
+    }).catch(() => {});
   }, [load, loadPresence]);
 
   // Live shared-ledger sync: when ANY collaborator trades, the hub pushes a
@@ -146,7 +149,14 @@ function PortfolioDetail() {
 
       {equityHistory.length >= 2 && (
         <div className="card p-5">
-          <h2 className="text-sm font-medium mb-3">Equity over time</h2>
+          <h2 className="text-sm font-medium mb-3 flex items-center gap-2">
+            Equity over time
+            {/* Honest valuation label: positions are marked at last fill between
+                trades and at the latest stored close for the final point — not
+                a live mark-to-market. */}
+            <ProvenanceBadge provenance="last_session" label="MARKED AT LAST CLOSE"
+              title="Positions valued at the latest stored close (last fill between trades) — not a live mark" />
+          </h2>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart
@@ -204,7 +214,11 @@ function PortfolioDetail() {
         </form>
 
         <div className="card p-5 lg:col-span-2">
-          <h2 className="text-sm font-medium mb-3">Positions</h2>
+          <h2 className="text-sm font-medium mb-3 flex items-center gap-2">
+            Positions
+            <ProvenanceBadge provenance="last_session" label="AVG ENTRY · REALIZED P&L"
+              title="Table shows average entry and realized P&L from the ledger — unrealized P&L is not marked live" />
+          </h2>
           {positions.length === 0 ? (
             <EmptyState icon="📊" title="No open positions"
               hint="Place an order to open your first position — collaborators see fills live." />

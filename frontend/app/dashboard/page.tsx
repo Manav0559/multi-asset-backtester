@@ -7,9 +7,11 @@ import {
   ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import Guard from "@/components/Guard";
+import ProvenanceBadge from "@/components/ProvenanceBadge";
 import { api } from "@/lib/api";
 import { Asset, MARKETS, MarketKey, assetsOfMarket } from "@/lib/assets";
 import { macd, rsi, sma } from "@/lib/indicators";
+import { useLive } from "@/lib/live";
 // Named PriceBar to avoid clashing with recharts' <Bar> chart primitive.
 type PriceBar = { time: string; open: number; high: number; low: number; close: number; volume: number };
 
@@ -27,7 +29,7 @@ function DashboardInner() {
       setAssets(a);
       const first = assetsOfMarket(a, "nasdaq")[0] ?? a[0];
       if (first) setSelected(first.id);
-    });
+    }).catch(() => {});
   }, []);
 
   function switchMarket(m: MarketKey) {
@@ -41,6 +43,7 @@ function DashboardInner() {
     setLoading(true);
     api<PriceBar[]>(`/assets/${selected}/bars?timeframe=1d&limit=300`)
       .then(setBars)
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, [selected]);
 
@@ -65,6 +68,13 @@ function DashboardInner() {
   const prev = bars[bars.length - 2];
   const change = last && prev ? ((last.close - prev.close) / prev.close) * 100 : 0;
   const asset = assets.find((a) => a.id === selected);
+
+  // Honest price card: prefer the streamed price when one exists (LIVE crypto),
+  // else the stored close labeled with the snapshot's provenance
+  // (DELAYED equity / LAST SESSION when the market is shut).
+  const live = useLive(selected);
+  const displayPrice = live.price != null ? Number(live.price) : last?.close;
+  const priceDigits = displayPrice != null && displayPrice < 1 ? 5 : 2;
 
   return (
     <div className="space-y-6">
@@ -124,7 +134,10 @@ function DashboardInner() {
 
       {last && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Stat label={`${asset?.symbol} Price`} value={`$${last.close.toFixed(2)}`} />
+          <Stat label={`${asset?.symbol} Price`}
+            value={`$${(displayPrice ?? last.close).toFixed(priceDigits)}`}
+            badge={<ProvenanceBadge provenance={live.provenance}
+              title={live.status?.label ?? undefined} />} />
           <Stat label="Change (1d)" value={`${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}
             tone={change >= 0 ? "up" : "down"} />
           <Stat label="RSI (14)" value={rsiVals[rsiVals.length - 1]?.toFixed(1) ?? "—"} />
@@ -186,10 +199,14 @@ const TOOLTIP = {
   background: "#111725", border: "1px solid #1f2937", borderRadius: 8, fontSize: 12,
 };
 
-function Stat({ label, value, tone }: { label: string; value: string; tone?: "up" | "down" }) {
+function Stat({ label, value, tone, badge }: {
+  label: string; value: string; tone?: "up" | "down"; badge?: React.ReactNode;
+}) {
   return (
     <div className="card p-4">
-      <p className="text-xs text-muted mb-1">{label}</p>
+      <p className="text-xs text-muted mb-1 flex items-center justify-between gap-2">
+        {label}{badge}
+      </p>
       <p className={`stat ${tone === "up" ? "text-up" : tone === "down" ? "text-down" : ""}`}>
         {value}
       </p>

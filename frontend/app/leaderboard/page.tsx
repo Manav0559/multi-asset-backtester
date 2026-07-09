@@ -4,6 +4,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import Guard from "@/components/Guard";
+import ProvenanceBadge from "@/components/ProvenanceBadge";
 import { EmptyState, SkeletonRows } from "@/components/ui";
 import { fetcher } from "@/lib/api";
 
@@ -61,9 +62,11 @@ function Leaderboard() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">Leaderboard</h1>
-          <p className="text-sm text-muted">
+          <p className="text-sm text-muted flex items-center gap-2 flex-wrap">
             Public portfolios ranked by {win === "all" ? "total" : win} return ·
-            equity = cash + positions at latest price
+            equity = cash + positions
+            <ProvenanceBadge provenance="last_session" label="MARKED AT LAST CLOSE"
+              title="Positions valued at the latest stored close — not a live mark" />
           </p>
         </div>
         <div className="segmented">

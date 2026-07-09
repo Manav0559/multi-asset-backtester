@@ -1,5 +1,6 @@
 """FastAPI entrypoint."""
 import logging
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -32,6 +33,19 @@ logging.basicConfig(
 async def lifespan(app: FastAPI):
     # Start the WS hub's Redis subscription bridge on boot, tear down on exit.
     await manager.start()
+
+    # Warm the exchange calendars off the event loop: building an
+    # exchange_calendars calendar is seconds of CPU, and doing it lazily made
+    # the FIRST equity snapshot after a restart hang while crypto stayed fast.
+    def _warm_calendars():
+        from app.services.market_hours import _CALENDAR, _calendar
+        for code in set(_CALENDAR.values()):
+            try:
+                _calendar(code)
+            except Exception:  # noqa: BLE001 — warm-up must never block startup
+                pass
+    threading.Thread(target=_warm_calendars, daemon=True).start()
+
     try:
         yield
     finally:
