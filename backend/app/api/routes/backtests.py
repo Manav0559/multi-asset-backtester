@@ -13,14 +13,16 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.db.session import get_db
+from app.core.config import settings
 from app.models import (
     Backtest,
     BacktestYearlyResult,
+    OhlcvBar,
     Strategy,
     StrategyVersion,
     User,
 )
-from app.models.enums import BacktestStatus
+from app.models.enums import BacktestStatus, Timeframe
 from app.schemas.backtest import (
     BacktestCreate,
     BacktestOut,
@@ -110,6 +112,31 @@ def create_strategy(body: StrategyCreate, user: User = Depends(get_current_user)
             "version": next_version}
 
 
+# Working-set model for admission control: bars land in a float frame (~6
+# OHLCV cols x 8 bytes) and the engine holds signals/positions/returns/equity
+# derivatives on top — 4x covers the measured envelope with slack (ML families
+# peaked <300MB on ~1.3K bars incl. model state; the frame dominates at scale).
+_BYTES_PER_BAR = 6 * 8
+_WORKING_SET_MULTIPLIER = 4
+
+
+def _estimate_working_set_mb(db: Session, body: BacktestCreate) -> int:
+    """Estimated peak memory (MB) for this job, from a chunk-excluded COUNT."""
+    asset_ids = body.asset_ids or [body.asset_id]
+    try:
+        tf = Timeframe(body.timeframe)
+    except ValueError:
+        return 0  # unknown timeframe fails later with its own 422
+    q = (select(func.count()).select_from(OhlcvBar)
+         .where(OhlcvBar.asset_id.in_(asset_ids), OhlcvBar.timeframe == tf))
+    if body.start:
+        q = q.where(OhlcvBar.time >= body.start)
+    if body.end:
+        q = q.where(OhlcvBar.time <= body.end)
+    n_bars = db.scalar(q) or 0
+    return (n_bars * _BYTES_PER_BAR * _WORKING_SET_MULTIPLIER) // 2**20
+
+
 @router.post("/backtests", response_model=BacktestOut, status_code=status.HTTP_202_ACCEPTED)
 def submit_backtest(body: BacktestCreate, user: User = Depends(get_current_user),
                     db: Session = Depends(get_db)) -> Backtest:
@@ -133,6 +160,19 @@ def submit_backtest(body: BacktestCreate, user: User = Depends(get_current_user)
         except SandboxError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                                 f"custom strategy rejected: {exc}") from exc
+    # Admission control: estimate the job's working set from a chunk-excluded
+    # COUNT (ms post-0008) and reject over-budget jobs NOW with an actionable
+    # message — not after minutes of queue time ending in an opaque OOM kill.
+    # RLIMIT_AS in the worker remains the backstop; this is the policy.
+    est_mb = _estimate_working_set_mb(db, body)
+    if est_mb > settings.BACKTEST_MAX_WORKING_SET_MB:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"estimated working set {est_mb}MB exceeds the "
+            f"{settings.BACKTEST_MAX_WORKING_SET_MB}MB job budget — narrow the "
+            f"date range, use a coarser timeframe (15m/1h/1d), or shrink the "
+            f"basket")
+
     # Human label for result tables: the user's own strategy name makes
     # "custom_code" rows recognizable ("my golden cross v2", not the key).
     label = db.scalar(select(Strategy.name).where(Strategy.id == sv.strategy_id))
