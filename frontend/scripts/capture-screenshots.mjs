@@ -137,7 +137,10 @@ const main = async () => {
   await page.screenshot({ path: `${OUT}09-ml-honesty.png` });
   console.log("09-ml-honesty.png");
 
-  // 10 — team chat + presence avatars (+ typing): bob joins over a raw WS
+  // 10 — team chat + presence avatars (+ typing): bob joins over a raw WS.
+  // Tall viewport + scroll-to-top: the chat auto-scrolls itself into view on
+  // load, which pushed the header (avatars) out of the default frame.
+  await page.setViewportSize({ width: 1440, height: 1650 });
   const pid = await syndicateId(alice.access_token);
   const bobWs = new WebSocket(`ws://${WS_HOST}/ws?token=${bob.access_token}`);
   await new Promise((res) => { bobWs.onopen = res; });
@@ -146,7 +149,8 @@ const main = async () => {
   await page.goto(`${FRONT}/portfolios/${pid}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("text=2 online", { timeout: 20000 });
   await page.waitForSelector("text=bob_demo is typing", { timeout: 15000 });
-  await sleep(400);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await sleep(600);
   await page.screenshot({ path: `${OUT}10-chat-presence.png` });
   console.log("10-chat-presence.png");
   clearInterval(typer);

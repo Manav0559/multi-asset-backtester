@@ -149,7 +149,10 @@ export default function StrategyPicker({ strategies, value, onChange }: {
       </button>
 
       {open && (
-        <div className="absolute z-50 mt-2 w-[26rem] max-w-[90vw] card p-0 overflow-hidden shadow-glass-lift">
+        // !bg near-solid: .card's glass tint is see-through — the form and
+        // results table bleed into the dropdown and it reads as garbled.
+        <div className="absolute z-50 mt-2 w-[26rem] max-w-[90vw] card p-0 overflow-hidden
+                        shadow-glass-lift !bg-[#0d1322]/[0.97]">
           <div className="p-2 border-b border-border">
             <input
               ref={searchRef}
