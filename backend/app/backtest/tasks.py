@@ -73,6 +73,12 @@ celery_app.conf.beat_schedule = {
         "task": "challenges.finish_expired",
         "schedule": 60.0,
     },
+    # Re-publish outbox rows whose fast-path publish died between DB commit
+    # and Redis (the dual-write hole). Normal case: zero rows, one indexed scan.
+    "relay-outbox": {
+        "task": "events.relay_outbox",
+        "schedule": 10.0,
+    },
 }
 
 
@@ -154,6 +160,17 @@ def snapshot_equity_task() -> dict:
         n = snapshot_portfolio_equity(db)
     SNAPSHOT_LAST_SUCCESS.set(time_mod.time())
     return {"snapshots": n}
+
+
+@celery_app.task(name="events.relay_outbox")
+def relay_outbox_task() -> dict:
+    from app.services.events import relay_outbox
+
+    out = relay_outbox()
+    if out["published"]:
+        logger.warning("outbox relay re-published %d event(s) missed by a "
+                       "crashed fast path", out["published"])
+    return out
 
 
 @celery_app.task(name="backtest.reap_dead")

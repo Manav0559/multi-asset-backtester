@@ -51,6 +51,12 @@ class ExecutionResult:
     filled_qty: Decimal | None
     cash_balance: Decimal
     version: int
+    # Set on fills: the outbox row committed with the ledger entry (the route
+    # marks it published after the fast-path Redis publish succeeds) and the
+    # exact payload it holds — publish THIS, so fast path and relay emit
+    # byte-identical events.
+    outbox_id: int | None = None
+    event: dict | None = None
 
     @property
     def filled(self) -> bool:
@@ -230,7 +236,23 @@ def execute_market_order(
     portfolio.version = portfolio.version + 1
 
     order.filled_at = trade.executed_at
+
+    # (3c) Transactional outbox: the fill event commits WITH the ledger entry,
+    # so a crash between commit and the route's Redis publish can never lose
+    # it — the beat relay re-publishes any row still unmarked. Built before
+    # commit so it snapshots the exact post-fill state.
+    result = ExecutionResult(order.id, OrderStatus.FILLED, None, price, qty,
+                             portfolio.cash_balance, portfolio.version)
+    from app.models import OutboxEvent, User
+    from app.services.events import portfolio_channel
+    event = result.to_event(portfolio_id, user_id, asset_id, side)
+    # Attribution (E5c) baked into the stored payload so the relay's replay
+    # carries the actor's name exactly like the fast path.
+    event["username"] = db.scalar(select(User.username).where(User.id == user_id))
+    outbox = OutboxEvent(channel=portfolio_channel(portfolio_id), payload=event)
+    db.add(outbox)
     db.commit()
 
-    return ExecutionResult(order.id, OrderStatus.FILLED, None, price, qty,
-                           portfolio.cash_balance, portfolio.version)
+    result.outbox_id = outbox.id
+    result.event = event
+    return result
