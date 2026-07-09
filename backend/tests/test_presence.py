@@ -184,3 +184,45 @@ def test_typing_ping_broadcasts_to_room(client, pres_env):
             assert typing is not None, "never received a typing frame"
             assert typing["user_id"] == str(member["id"])
             assert typing["username"] == member["username"]
+
+
+def test_hub_heartbeat_frame_and_epoch(monkeypatch):
+    """The hub emits liveness heartbeats carrying its incarnation epoch —
+    clients use missed beats to detect silent link death and an epoch change
+    to trigger a full resync after a hub restart.
+
+    Standalone (does NOT use the `client` fixture): the hub manager is a
+    module singleton, and two overlapping TestClient lifespans would start it
+    on two event loops. Patch the interval BEFORE this test's own lifespan."""
+    from fastapi.testclient import TestClient
+
+    from app.core.config import settings
+    from app.main import app as _app
+
+    monkeypatch.setattr(settings, "HUB_HEARTBEAT_SECONDS", 0.2)
+    user = _user("hb")
+    try:
+        with TestClient(_app) as c:  # fresh lifespan -> fresh epoch + fast beat
+            with c.websocket_connect(f"/ws?token={user['token']}") as ws:
+                ws.receive_text()  # connected
+                hb = None
+                for _ in range(20):  # skip non-hb frames
+                    frame = json.loads(ws.receive_text())
+                    if frame.get("type") == "hb":
+                        hb = frame
+                        break
+                assert hb is not None, "no heartbeat within 20 frames"
+                assert len(hb["epoch"]) == 32      # uuid4 hex incarnation id
+                assert hb["ts"] > 0
+                # A second beat arrives with the SAME epoch (no restart happened).
+                hb2 = None
+                for _ in range(20):
+                    frame = json.loads(ws.receive_text())
+                    if frame.get("type") == "hb":
+                        hb2 = frame
+                        break
+                assert hb2 is not None and hb2["epoch"] == hb["epoch"]
+    finally:
+        with SessionLocal() as db:
+            db.execute(delete(User).where(User.id == user["id"]))
+            db.commit()

@@ -35,6 +35,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+import uuid
 from collections import defaultdict, deque
 
 from fastapi import WebSocket
@@ -49,7 +51,9 @@ _PORTFOLIO_PREFIX = "portfolio:"
 _HUB_PATTERNS = ("tick:*", "bar:*", "depth:*", "portfolio:*")
 # Only the latest value per conflatable channel matters; a slow client drops
 # intermediate ones. Everything else (portfolio:) is must-deliver.
-_CONFLATABLE_PREFIXES = ("tick:", "depth:", "bar:")
+# "_hb" is the hub's own heartbeat pseudo-channel — always conflatable (a slow
+# client only ever needs the newest liveness proof).
+_CONFLATABLE_PREFIXES = ("tick:", "depth:", "bar:", "_hb")
 _MUST_DELIVER_MAX = 1000  # queued must-deliver frames before we drop the client
 
 
@@ -120,6 +124,8 @@ class ConnectionManager:
         self._sender_tasks: dict[WebSocket, asyncio.Task] = {}
         self._pubsub = None
         self._reader_task: asyncio.Task | None = None
+        self._hb_task: asyncio.Task | None = None
+        self.epoch: str = ""   # set at start(); new per hub incarnation
         self._lock = asyncio.Lock()
 
     # ---- lifecycle --------------------------------------------------------
@@ -128,18 +134,37 @@ class ConnectionManager:
         self._pubsub = self.bus.redis.pubsub()
         await self._pubsub.psubscribe(*_HUB_PATTERNS)
         self._reader_task = asyncio.create_task(self._reader_loop(), name="hub-reader")
-        logger.info("connection manager started (patterns=%s)", _HUB_PATTERNS)
+        # Epoch identifies THIS hub incarnation. A client that sees the epoch
+        # change knows the hub restarted while its socket auto-reconnected —
+        # anything it "knew" may be stale, so it must resync over REST. The
+        # heartbeat doubles as silent-gap detection (missed beats => the link
+        # is dead even if TCP hasn't noticed yet).
+        self.epoch = uuid.uuid4().hex
+        self._hb_task = asyncio.create_task(self._heartbeat_loop(), name="hub-hb")
+        logger.info("connection manager started (patterns=%s, epoch=%s)",
+                    _HUB_PATTERNS, self.epoch)
 
     async def stop(self) -> None:
-        if self._reader_task:
-            self._reader_task.cancel()
-            try:
-                await self._reader_task
-            except asyncio.CancelledError:
-                pass
+        for task in (self._reader_task, self._hb_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
         if self._pubsub:
             await self._pubsub.aclose()
         await self.bus.close()
+
+    async def _heartbeat_loop(self) -> None:
+        from app.core.config import settings
+        while True:
+            frame = json.dumps({"type": "hb", "epoch": self.epoch,
+                                "ts": time.time()})
+            for sender in list(self._senders.values()):
+                if not sender.closed:
+                    sender.offer("_hb", frame)
+            await asyncio.sleep(settings.HUB_HEARTBEAT_SECONDS)
 
     # ---- connection registration ------------------------------------------
     async def connect(self, ws: WebSocket) -> None:
