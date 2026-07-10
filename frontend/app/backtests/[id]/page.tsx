@@ -201,6 +201,30 @@ function BacktestDetail() {
         </div>
       )}
 
+      {bt.diagnostics?.attribution?.betas != null && (
+        <div className="card p-5" data-testid="attribution-card">
+          <div className="flex items-baseline gap-2 mb-4">
+            <h2 className="text-sm font-medium">Factor Attribution</h2>
+            <span className="text-xs text-muted">
+              OLS vs universe factors · R² {bt.diagnostics.attribution.r_squared?.toFixed(2)} ·{" "}
+              {bt.diagnostics.attribution.n_obs} bars
+            </span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <Metric label="Alpha (annualized)"
+              value={`${(bt.diagnostics.attribution.alpha_annual_pct ?? 0).toFixed(2)}%`}
+              tone={bt.diagnostics.attribution.alpha_annual_pct ?? 0} accent />
+            <Metric label="β Market" value={(bt.diagnostics.attribution.betas.MKT ?? 0).toFixed(2)} />
+            <Metric label="β Momentum" value={(bt.diagnostics.attribution.betas.MOM ?? 0).toFixed(2)} />
+            <Metric label="β Liquidity (size proxy)" value={(bt.diagnostics.attribution.betas.LIQ ?? 0).toFixed(2)} />
+          </div>
+          <p className="text-[11px] text-muted mt-3">
+            Returns explained by factor exposure aren&rsquo;t alpha — a &ldquo;momentum strategy&rdquo;
+            with β<sub>MOM</sub> ≈ 1 and α ≈ 0 is buyable factor risk. {bt.diagnostics.attribution.factors_note}.
+          </p>
+        </div>
+      )}
+
       <div className="card p-5">
         <h2 className="text-sm font-medium text-muted mb-3">Equity Curve</h2>
         {curve.length ? (
