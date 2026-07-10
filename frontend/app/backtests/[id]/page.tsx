@@ -20,6 +20,12 @@ type Backtest = {
     // Portfolio (long/short, multi-asset) diagnostics.
     n_assets?: number; avg_gross_exposure?: number;
     max_net_exposure?: number; is_market_neutral?: boolean;
+    // Tail risk (per-bar loss fractions) + factor attribution.
+    risk?: Record<string, number>;
+    attribution?: {
+      alpha_annual_pct?: number; r_squared?: number; n_obs?: number;
+      betas?: Record<string, number>; factors_note?: string;
+    };
   } | null;
 };
 type Yearly = {
@@ -169,6 +175,32 @@ function BacktestDetail() {
         <Metric label="Win Rate" value={pct(bt.win_rate_pct)} />
       </div>
 
+      {bt.diagnostics?.risk?.var_95 != null && (
+        <div className="card p-5" data-testid="risk-card">
+          <div className="flex items-baseline gap-2 mb-4">
+            <h2 className="text-sm font-medium">Tail Risk</h2>
+            <span className="text-xs text-muted">
+              per-bar loss estimates · historical + Cornish-Fisher
+              (skew {bt.diagnostics.risk.skew?.toFixed(2)}, ex-kurt{" "}
+              {bt.diagnostics.risk.excess_kurtosis?.toFixed(2)})
+            </span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+            <Metric label="VaR 95%" value={lossPct(bt.diagnostics.risk.var_95)} tone={-1} />
+            <Metric label="ES 95%" value={lossPct(bt.diagnostics.risk.es_95)} tone={-1} />
+            <Metric label="CF-VaR 95%" value={lossPct(bt.diagnostics.risk.cf_var_95)} tone={-1} />
+            <Metric label="VaR 99%" value={lossPct(bt.diagnostics.risk.var_99)} tone={-1} />
+            <Metric label="ES 99%" value={lossPct(bt.diagnostics.risk.es_99)} tone={-1} />
+            <Metric label="CF-VaR 99%" value={lossPct(bt.diagnostics.risk.cf_var_99)} tone={-1} />
+          </div>
+          <p className="text-[11px] text-muted mt-3">
+            ES = average loss in the worst 5%/1% of bars — the &ldquo;how bad when it&rsquo;s
+            bad&rdquo; number. Cornish-Fisher widens the normal estimate for skew/fat tails;
+            CF &gt; VaR means the smooth curve hides an ugly tail.
+          </p>
+        </div>
+      )}
+
       <div className="card p-5">
         <h2 className="text-sm font-medium text-muted mb-3">Equity Curve</h2>
         {curve.length ? (
@@ -231,6 +263,8 @@ function BacktestDetail() {
 function num(v: string | null) { return v == null ? 0 : Number(v); }
 function pct(v: string | null) { return v == null ? "—" : `${Number(v).toFixed(2)}%`; }
 function fx(v: string | null) { return v == null ? "—" : Number(v).toFixed(3); }
+// Tail-risk values arrive as positive per-bar loss FRACTIONS.
+function lossPct(v: number | undefined) { return v == null ? "—" : `${(v * 100).toFixed(2)}%`; }
 
 function Metric({ label, value, tone, accent }: {
   label: string; value: string; tone?: number; accent?: boolean;
