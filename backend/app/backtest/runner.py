@@ -15,6 +15,7 @@ back to the backtests / backtest_yearly_results rows.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -33,8 +34,10 @@ from app.backtest.metrics import (
 from app.backtest.registry import STRATEGY_REGISTRY
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models import Backtest, BacktestYearlyResult, OhlcvBar
+from app.models import Asset, Backtest, BacktestYearlyResult, OhlcvBar
 from app.models.enums import BacktestStatus, Timeframe
+
+logger = logging.getLogger("backtest.runner")
 
 
 class BacktestConfigError(Exception):
@@ -166,6 +169,12 @@ def _execute(cfg: dict) -> dict:
     if risk:
         diagnostics = {**(diagnostics or {}), "risk": risk}
 
+    # Factor attribution vs the stored universe (same asset class). A report
+    # nicety: any failure or thin universe just omits the card.
+    attribution = _compute_attribution(cfg, out.returns)
+    if attribution:
+        diagnostics = {**(diagnostics or {}), "attribution": attribution}
+
     # Downsample equity curve to <=1000 points for charting.
     step = max(len(out.equity) // 1000, 1)
     curve = [[ts.isoformat(), round(float(v), 2)]
@@ -173,6 +182,47 @@ def _execute(cfg: dict) -> dict:
 
     return {"metrics": metrics, "yearly": yearly, "dsr": dsr, "curve": curve,
             "diagnostics": diagnostics}
+
+
+_TF_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400}
+
+
+def _compute_attribution(cfg: dict, returns: pd.Series) -> dict | None:
+    """Regress the run's returns on MKT/MOM/LIQ factors built from every
+    stored asset of the SAME class. Union-aligned panels (an asset missing
+    bars contributes NaN, not a dropped row — load_panel's inner join would
+    let one late-listed name truncate the whole factor history)."""
+    from app.backtest.attribution import MIN_OBS, MIN_UNIVERSE, attribute, build_factors
+
+    try:
+        timeframe = Timeframe(cfg.get("timeframe", "1d"))
+        anchor_ids = cfg.get("asset_ids") or ([cfg.get("asset_id")] if cfg.get("asset_id") else [])
+        if not anchor_ids or len(returns) < MIN_OBS:
+            return None
+        # Warm-up so the 126-bar momentum score exists from the first return
+        # bar (x2 for calendar gaps — weekends/closed sessions).
+        warmup = pd.Timedelta(seconds=_TF_SECONDS.get(timeframe.value, 86400) * 300 * 2)
+        start = returns.index[0].to_pydatetime() - warmup
+        end = returns.index[-1].to_pydatetime()
+
+        with SessionLocal() as db:
+            klass = db.scalar(select(Asset.asset_class).where(Asset.id == int(anchor_ids[0])))
+            ids = db.scalars(select(Asset.id).where(Asset.asset_class == klass)).all()
+            if len(ids) < MIN_UNIVERSE:
+                return None
+            closes, volumes = {}, {}
+            for aid in ids:
+                bars = load_bars(db, aid, timeframe, start, end)
+                if len(bars) >= MIN_OBS:
+                    closes[str(aid)] = bars["close"]
+                    volumes[str(aid)] = bars["volume"]
+        if len(closes) < MIN_UNIVERSE:
+            return None
+        factors = build_factors(pd.DataFrame(closes), pd.DataFrame(volumes))
+        return attribute(returns, factors)
+    except Exception:  # noqa: BLE001 — never fail a backtest over its report card
+        logger.warning("factor attribution skipped", exc_info=True)
+        return None
 
 
 def _execute_single_asset(cfg: dict):
