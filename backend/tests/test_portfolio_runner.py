@@ -80,3 +80,8 @@ def test_multi_asset_long_short_runs_and_persists(two_asset_env):
         # diagnostics record the market-neutral construction
         assert bt.diagnostics["n_assets"] == 2
         assert bt.diagnostics["is_market_neutral"] is True
+        # tail-risk block rides diagnostics; definitional orderings hold
+        risk = bt.diagnostics["risk"]
+        assert risk["es_95"] >= risk["var_95"]
+        assert risk["es_99"] >= risk["es_95"]
+        assert "cf_var_99" in risk

@@ -73,6 +73,42 @@ def max_drawdown_pct(equity: pd.Series) -> float:
     return float(drawdown.min() * 100.0)
 
 
+def tail_risk_metrics(returns: pd.Series) -> dict:
+    """Historical VaR/ES + Cornish-Fisher modified VaR at 95%/99%.
+
+    All values are POSITIVE loss fractions per period (the report layer
+    formats as %); the period is whatever frequency the return series is —
+    daily bars => daily VaR. Historical quantiles make no distributional
+    assumption; Cornish-Fisher adjusts the normal quantile for the skew and
+    excess kurtosis real strategy returns actually have:
+
+        z_cf = z + (z²-1)·S/6 + (z³-3z)·K/24 - (2z³-5z)·S²/36
+
+    Negative skew / fat tails push CF-VaR beyond normal VaR — which is the
+    honest direction: the strategies that look smoothest carry the worst
+    tails. ES (expected shortfall) answers "how bad is it WHEN it's bad" —
+    the mean loss beyond VaR — and is the number an allocator actually asks.
+    """
+    r = returns.dropna()
+    if len(r) < 20:  # too few observations for a meaningful tail estimate
+        return {}
+    mu, sd = float(r.mean()), float(r.std(ddof=1))
+    skew, exkurt = float(r.skew()), float(r.kurt())  # pandas kurt() is EXCESS
+    out: dict = {"skew": round(skew, 4), "excess_kurtosis": round(exkurt, 4)}
+    for alpha in (0.95, 0.99):
+        tag = str(int(alpha * 100))
+        q = float(r.quantile(1.0 - alpha))
+        tail = r[r <= q]
+        out[f"var_{tag}"] = round(-q, 6)
+        out[f"es_{tag}"] = round(float(-tail.mean()) if len(tail) else -q, 6)
+        z = float(norm.ppf(1.0 - alpha))  # negative: left tail
+        z_cf = (z + (z**2 - 1) * skew / 6
+                + (z**3 - 3 * z) * exkurt / 24
+                - (2 * z**3 - 5 * z) * skew**2 / 36)
+        out[f"cf_var_{tag}"] = round(-(mu + z_cf * sd), 6)
+    return out
+
+
 def compute_metrics(returns: pd.Series, equity: pd.Series, trades: pd.DataFrame,
                     rf: float = 0.0) -> Metrics:
     ppy = infer_periods_per_year(equity.index)

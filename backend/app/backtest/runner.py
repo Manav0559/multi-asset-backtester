@@ -27,6 +27,7 @@ from app.backtest.engine import run_backtest
 from app.backtest.metrics import (
     compute_metrics,
     deflated_sharpe_ratio,
+    tail_risk_metrics,
     yearly_breakdown,
 )
 from app.backtest.registry import STRATEGY_REGISTRY
@@ -158,6 +159,12 @@ def _execute(cfg: dict) -> dict:
                               rf=settings.BACKTEST_RISK_FREE_RATE)
     dsr = deflated_sharpe_ratio(
         out.returns, int(cfg.get("n_trials", settings.BACKTEST_DEFAULT_TRIALS)))
+
+    # Tail risk (VaR/ES/Cornish-Fisher) rides the diagnostics JSON — same
+    # per-period frequency as the bar series, formatted by the report layer.
+    risk = tail_risk_metrics(out.returns)
+    if risk:
+        diagnostics = {**(diagnostics or {}), "risk": risk}
 
     # Downsample equity curve to <=1000 points for charting.
     step = max(len(out.equity) // 1000, 1)
