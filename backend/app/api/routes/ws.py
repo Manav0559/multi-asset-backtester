@@ -13,6 +13,7 @@ DB hit per subscribe.
 from __future__ import annotations
 
 import json
+import platform
 import uuid
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
@@ -62,7 +63,9 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(...)):
     portfolio_ids = [c.split(":", 1)[1] for c in channels]
 
     await manager.connect(websocket)
-    await websocket.send_text(json.dumps({"type": "connected", "user": str(user.id)}))
+    # `node` = which hub replica holds this socket (scale-out proof + ops).
+    await websocket.send_text(json.dumps({"type": "connected", "user": str(user.id),
+                                          "node": platform.node()}))
     await _presence(portfolio_ids, user.id, online=True)  # I'm here — tell the rooms
 
     try:

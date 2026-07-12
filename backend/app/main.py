@@ -1,5 +1,6 @@
 """FastAPI entrypoint."""
 import logging
+import platform
 import threading
 from contextlib import asynccontextmanager
 
@@ -87,7 +88,9 @@ app.include_router(ws_router)
 def health() -> dict:
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
-    return {"status": "ok", "app": settings.APP_NAME}
+    # `node` identifies the replica behind a load balancer (container hostname)
+    # — how the scale-out proof (and an operator) sees round-robin working.
+    return {"status": "ok", "app": settings.APP_NAME, "node": platform.node()}
 
 
 @app.get("/metrics", include_in_schema=False)
