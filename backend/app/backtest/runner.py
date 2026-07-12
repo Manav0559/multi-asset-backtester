@@ -250,17 +250,25 @@ def _execute_single_asset(cfg: dict):
         diagnostics = {"custom_class": type(custom).__name__,
                        "code_bytes": len(cfg.get("code", "").encode())}
     elif cfg["strategy"] == "ml_direction" or cfg["strategy"].startswith("ml_"):
-        from app.ml.model import MODEL_FAMILIES, run_ml_direction
-        # `ml_direction` is the xgboost default; `ml_<family>` picks a family.
+        from app.ml.model import MODEL_FAMILIES, run_ml_direction, run_ml_meta
+        # `ml_direction` is the xgboost default; `ml_<family>` picks a family;
+        # `ml_meta_momentum` is the meta-labeling pipeline (same CV hygiene,
+        # purge = barrier max_horizon instead of the fixed label horizon).
         p = dict(params or {})
-        if cfg["strategy"] != "ml_direction":
-            fam = cfg["strategy"][len("ml_"):]
-            if fam not in MODEL_FAMILIES:
-                raise BacktestConfigError(f"unknown ML family '{fam}'")
-            p["model_id"] = fam
-        # Record trials for the Deflated Sharpe multiple-testing correction.
-        n_trials = _record_and_count_trial(cfg, p)
-        ml = run_ml_direction(df, **p)
+        if cfg["strategy"] == "ml_meta_momentum":
+            p["model_id"] = "meta_momentum"       # its own DSR research key
+            n_trials = _record_and_count_trial(cfg, p)
+            p.pop("model_id")
+            ml = run_ml_meta(df, **p)
+        else:
+            if cfg["strategy"] != "ml_direction":
+                fam = cfg["strategy"][len("ml_"):]
+                if fam not in MODEL_FAMILIES:
+                    raise BacktestConfigError(f"unknown ML family '{fam}'")
+                p["model_id"] = fam
+            # Record trials for the Deflated Sharpe multiple-testing correction.
+            n_trials = _record_and_count_trial(cfg, p)
+            ml = run_ml_direction(df, **p)
         signal = ml.signal
         strategy = lambda _df: signal.reindex(_df.index).fillna(0.0)  # noqa: E731
         diagnostics = {
