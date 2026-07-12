@@ -1,0 +1,27 @@
+# Scale-out overlay: 2 backend/hub replicas behind a plain nginx round-robin
+# LB — NO sticky sessions anywhere. Proves the fan-out architecture claim
+# (each replica runs its own ConnectionManager; portfolio events reach every
+# subscribed socket on every replica because fan-out rides Redis pub/sub).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml \
+#       --profile app up -d backend lb
+#   backend/.venv/bin/python backend/scripts/verify_scaleout.py
+#
+# The replicas cannot each bind host :8000, so the backend's host port moves
+# to the LB.
+services:
+  backend:
+    ports: !reset []
+    deploy:
+      replicas: 2
+
+  lb:
+    profiles: ["app"]
+    image: nginx:alpine
+    volumes:
+      - ./deploy/nginx-lb.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      backend:
+        condition: service_healthy
