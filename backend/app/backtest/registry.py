@@ -120,7 +120,7 @@ def _build_default_registry() -> StrategyRegistry:
     # ML model catalog: each sklearn/xgboost family is a selectable strategy
     # (`ml_<family>`) routed through the SAME purged+embargoed+calibrated
     # pipeline. ml_direction stays as the xgboost default (backward compat).
-    from app.ml.model import MODEL_FAMILIES, ml_direction_strategy
+    from app.ml.model import MODEL_FAMILIES, ml_direction_strategy, ml_meta_strategy
     for fam, label in MODEL_FAMILIES.items():
         reg.register(StrategyEntry(
             key=f"ml_{fam}", kind="single",
@@ -129,6 +129,17 @@ def _build_default_registry() -> StrategyRegistry:
             category="ml",
             defaults={"horizon": 1, "n_splits": 5, "embargo": 0},
         ))
+    # Meta-labeling: a transparent momentum rule picks direction; the model
+    # only sizes the trade by calibrated P(win) on triple-barrier outcomes.
+    reg.register(StrategyEntry(
+        key="ml_meta_momentum", kind="single",
+        factory=ml_meta_strategy,
+        description=("Meta-labeling — momentum picks the trade, a calibrated "
+                     "classifier sizes it by P(profit-take before stop-loss)"),
+        category="ml",
+        defaults={"pt_mult": 2.0, "sl_mult": 1.0, "max_horizon": 10,
+                  "mom_lookback": 20, "n_splits": 5},
+    ))
     return reg
 
 
