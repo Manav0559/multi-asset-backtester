@@ -28,6 +28,10 @@ from app.db.session import SessionLocal
 from app.models import Asset, OhlcvBar
 from app.models.enums import AssetClass, Timeframe
 
+# Current constituents per the NASDAQ-100 membership list (verified against
+# Wikipedia's navbox + per-company infoboxes, 2026-07-13). Notable newer
+# members validated by infobox, not memory: HONA (Honeywell Aerospace split),
+# SPCX (SpaceX post-IPO), CRWV, NBIS, ALAB, RKLB, SNDK (WDC spin).
 NASDAQ_100 = [
     "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "GOOG", "AVGO", "TSLA",
     "COST", "NFLX", "ASML", "AMD", "PEP", "ADBE", "LIN", "CSCO", "TMUS",
@@ -35,12 +39,22 @@ NASDAQ_100 = [
     "PANW", "ADP", "VRTX", "GILD", "SBUX", "MU", "ADI", "LRCX", "INTC",
     "MDLZ", "REGN", "KLAC", "CTAS", "PYPL", "SNPS", "CDNS", "MAR", "CSX",
     "ORLY", "CRWD", "ABNB", "FTNT", "PCAR", "NXPI", "MRVL", "CEG", "DASH",
-    "ROP", "WDAY", "MNST", "CHTR", "TTD", "ADSK", "AEP", "FANG", "PAYX",
-    "ODFL", "ROST", "KDP", "FAST", "EA", "GEHC", "BKR", "VRSK", "CTSH",
-    "XEL", "EXC", "TEAM", "KHC", "CCEP", "DDOG", "IDXX", "ZS", "ON",
-    # ANSS omitted: acquired by Synopsys (2025), no longer trades
-    "TTWO", "CSGP", "DXCM", "CDW", "BIIB", "WBD", "GFS", "MDB",
-    "LULU", "MELI", "PDD", "ARM", "SMCI",
+    "ROP", "WDAY", "MNST", "ADSK", "AEP", "FANG", "PAYX",
+    "ODFL", "ROST", "KDP", "FAST", "EA", "GEHC", "BKR",
+    "XEL", "EXC", "KHC", "CCEP", "DDOG", "IDXX",
+    "TTWO", "DXCM", "WBD",
+    "MELI", "PDD", "ARM",
+    # 2025-26 additions/newly public:
+    "ALNY", "APP", "ALAB", "AXON", "CPRT", "CRWV", "FER", "HONA", "LITE",
+    "MCHP", "MSTR", "MPWR", "NBIS", "PLTR", "RKLB", "SNDK", "STX", "SHOP",
+    "SPCX", "TER", "TRI", "WMT", "WDC",
+]
+
+# Departed members kept in the DB for history (survivorship honesty — the
+# universe table is still point-in-time-naive; see README limitation):
+NASDAQ_DEPARTED = [
+    "CHTR", "TTD", "VRSK", "CTSH", "TEAM", "ZS", "ON", "CSGP", "CDW",
+    "BIIB", "GFS", "MDB", "LULU", "SMCI",
 ]
 
 NIFTY_50 = [
