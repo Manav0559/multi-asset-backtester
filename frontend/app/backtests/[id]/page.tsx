@@ -7,6 +7,7 @@ import {
 } from "recharts";
 import Guard from "@/components/Guard";
 import { api } from "@/lib/api";
+import { ccySymbol } from "@/lib/format";
 
 type Backtest = {
   id: string; status: string; config: any; error: string | null;
@@ -22,6 +23,7 @@ type Backtest = {
     max_net_exposure?: number; is_market_neutral?: boolean;
     // Tail risk (per-bar loss fractions) + factor attribution.
     risk?: Record<string, number>;
+    currency?: string;
     attribution?: {
       alpha_annual_pct?: number; r_squared?: number; n_obs?: number;
       betas?: Record<string, number>; factors_note?: string;
@@ -239,7 +241,7 @@ function BacktestDetail() {
               <CartesianGrid stroke="#1f2937" vertical={false} />
               <XAxis dataKey="time" tick={{ fill: "#64748b", fontSize: 11 }} minTickGap={50} />
               <YAxis domain={["auto", "auto"]} tick={{ fill: "#64748b", fontSize: 11 }} width={70}
-                tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
+                tickFormatter={(v) => `${ccySymbol(bt.diagnostics?.currency)}${(v / 1000).toFixed(0)}k`} />
               <Tooltip contentStyle={{ background: "#111725", border: "1px solid #1f2937", borderRadius: 8 }} />
               <Area type="monotone" dataKey="equity" stroke="#22d3ee" fill="url(#eq)" strokeWidth={2} />
             </AreaChart>

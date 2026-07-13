@@ -175,6 +175,11 @@ def _execute(cfg: dict) -> dict:
     if attribution:
         diagnostics = {**(diagnostics or {}), "attribution": attribution}
 
+    # Report currency: the engine is unit-agnostic (works in the asset's
+    # quote units), so the DISPLAY must say which units those are. Uniform
+    # basket => that currency; mixed => USD label with the mix noted.
+    diagnostics = {**(diagnostics or {}), "currency": _report_currency(cfg)}
+
     # Downsample equity curve to <=1000 points for charting.
     step = max(len(out.equity) // 1000, 1)
     curve = [[ts.isoformat(), round(float(v), 2)]
@@ -182,6 +187,16 @@ def _execute(cfg: dict) -> dict:
 
     return {"metrics": metrics, "yearly": yearly, "dsr": dsr, "curve": curve,
             "diagnostics": diagnostics}
+
+
+def _report_currency(cfg: dict) -> str:
+    asset_ids = cfg.get("asset_ids") or ([cfg.get("asset_id")] if cfg.get("asset_id") else [])
+    if not asset_ids:
+        return "USD"
+    with SessionLocal() as db:
+        ccys = set(db.scalars(select(Asset.currency)
+                              .where(Asset.id.in_([int(a) for a in asset_ids]))).all())
+    return ccys.pop() if len(ccys) == 1 else "USD"
 
 
 _TF_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400}

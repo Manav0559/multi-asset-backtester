@@ -16,9 +16,10 @@ import AssetChart, { Bar, ChartMode, IndicatorSeries } from "@/components/AssetC
 import ProvenanceBadge from "@/components/ProvenanceBadge";
 import { LiveOrderBook, VolumeProfile } from "@/components/OrderBook";
 import { api, fetcher } from "@/lib/api";
+import { ccySymbol } from "@/lib/format";
 import { useLive } from "@/lib/live";
 
-type Asset = { id: number; symbol: string; exchange: string; asset_class: string };
+type Asset = { id: number; symbol: string; exchange: string; asset_class: string; currency?: string };
 type CatalogEntry = { name: string; category: string; params: { name: string; default: number | null }[] };
 type ActiveIndicator = { name: string; params: Record<string, number> };
 
@@ -116,6 +117,7 @@ function AssetPageInner() {
               Adaptive precision so sub-dollar assets (ADA, DOGE) show real
               movement, not a 2-decimal round-off. */}
           <span className="font-mono text-lg" data-testid="live-price">
+            {ccySymbol(asset?.currency)}
             {live.price != null ? fmtPrice(Number(live.price))
               : last ? fmtPrice(last.close) : "…"}
           </span>

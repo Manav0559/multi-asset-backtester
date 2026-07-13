@@ -13,6 +13,7 @@ import { EmptyState, Skeleton, SkeletonRows } from "@/components/ui";
 import { useToast } from "@/components/ToastProvider";
 import { api } from "@/lib/api";
 import { Asset, groupAssets } from "@/lib/assets";
+import { money } from "@/lib/format";
 import { Hub } from "@/lib/ws";
 
 type Portfolio = { id: string; name: string; cash_balance: string; initial_cash: string; version: number };
@@ -88,8 +89,9 @@ function PortfolioDetail() {
         { method: "POST", body: JSON.stringify({ asset_id: assetId, side, qty: Number(qty) }) }
       );
       if (r.status === "filled") {
-        setMsg({ text: `Filled ${side} ${qty} @ $${Number(r.fill_price).toFixed(2)}`, ok: true });
-        toast.success(`Filled ${side} ${qty} @ $${Number(r.fill_price).toFixed(2)}`);
+        const ccy = assets.find((a) => a.id === assetId)?.currency;
+        setMsg({ text: `Filled ${side} ${qty} @ ${money(r.fill_price, ccy)}`, ok: true });
+        toast.success(`Filled ${side} ${qty} @ ${money(r.fill_price, ccy)}`);
       } else {
         setMsg({ text: r.reason || "Rejected", ok: false });
         toast.error(r.reason || "Order rejected");
@@ -117,6 +119,7 @@ function PortfolioDetail() {
   }
   const pnl = Number(pf.cash_balance) - Number(pf.initial_cash);
   const symOf = (aid: number) => assets.find((a) => a.id === aid)?.symbol ?? `#${aid}`;
+  const ccyOf = (aid: number) => assets.find((a) => a.id === aid)?.currency;
 
   return (
     <div className="space-y-6">
@@ -235,9 +238,9 @@ function PortfolioDetail() {
                   <tr key={p.asset_id} className="border-t border-border">
                     <td className="py-2">{symOf(p.asset_id)}</td>
                     <td className="py-2 text-right">{Number(p.qty)}</td>
-                    <td className="py-2 text-right">${Number(p.avg_entry_price).toFixed(2)}</td>
+                    <td className="py-2 text-right">{money(p.avg_entry_price, ccyOf(p.asset_id))}</td>
                     <td className={`py-2 text-right ${Number(p.realized_pnl) >= 0 ? "text-up" : "text-down"}`}>
-                      ${Number(p.realized_pnl).toFixed(2)}
+                      {money(p.realized_pnl, ccyOf(p.asset_id))}
                     </td>
                   </tr>
                 ))}

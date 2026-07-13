@@ -88,6 +88,19 @@ celery_app.conf.beat_schedule = {
         "task": "events.relay_outbox",
         "schedule": 10.0,
     },
+    # Spot FX for the multi-currency ledger (USDINR etc.) — hourly is plenty
+    # for a paper venue; execution rejects non-USD fills until the first run.
+    "refresh-fx-rates": {
+        "task": "fx.refresh",
+        "schedule": 3600.0,
+    },
+    # Append yesterday's daily bar for every equity so charts/leaderboards
+    # keep moving after deploy without manual backfills. Crypto bars already
+    # append live via the ticker's kline persister.
+    "append-daily-bars": {
+        "task": "market.append_daily_bars",
+        "schedule": 6 * 3600.0,
+    },
 }
 
 
@@ -169,6 +182,45 @@ def snapshot_equity_task() -> dict:
         n = snapshot_portfolio_equity(db)
     SNAPSHOT_LAST_SUCCESS.set(time_mod.time())
     return {"snapshots": n}
+
+
+@celery_app.task(name="fx.refresh")
+def refresh_fx_task() -> dict:
+    from app.services.fx import refresh_fx_rates
+
+    return refresh_fx_rates()
+
+
+@celery_app.task(name="market.append_daily_bars", time_limit=1800,
+                 soft_time_limit=1700)
+def append_daily_bars_task() -> dict:
+    """Incremental daily-bar refresh for every active EQUITY asset: fetch the
+    last few sessions from yfinance and upsert (BarPersister-style idempotent
+    on the PK). Runs every 6h; out-of-hours runs are cheap no-ops because
+    yfinance returns already-stored sessions and the upsert skips them."""
+    from sqlalchemy import select
+
+    from app.data.backfill import backfill_yfinance
+    from app.db.session import SessionLocal
+    from app.models import Asset
+    from app.models.enums import AssetClass, Timeframe
+
+    appended, failed = 0, 0
+    with SessionLocal() as db:
+        rows = db.execute(
+            select(Asset.symbol, Asset.exchange, Asset.asset_class)
+            .where(Asset.is_active,
+                   Asset.asset_class.in_([AssetClass.US_EQUITY, AssetClass.IN_EQUITY]))
+        ).all()
+    for symbol, exchange, klass in rows:
+        try:
+            appended += backfill_yfinance(symbol, exchange, klass,
+                                          timeframe=Timeframe.D1, period="5d") or 0
+        except Exception:  # noqa: BLE001 — one bad ticker never sinks the sweep
+            failed += 1
+    if appended or failed:
+        logger.info("daily bar append: +%d bars, %d failures", appended, failed)
+    return {"appended": appended, "failed": failed}
 
 
 @celery_app.task(name="events.relay_outbox")

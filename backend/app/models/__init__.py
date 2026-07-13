@@ -5,6 +5,7 @@ from app.models.asset import Asset
 from app.models.backtest import Backtest, BacktestYearlyResult
 from app.models.challenge import Challenge
 from app.models.chat import ChatMessage
+from app.models.fx import FxRate
 from app.models.market_data import OhlcvBar
 from app.models.ml_trial import MlTrial
 from app.models.outbox import OutboxEvent
@@ -21,6 +22,7 @@ __all__ = [
     "BacktestYearlyResult",
     "Challenge",
     "ChatMessage",
+    "FxRate",
     "OhlcvBar",
     "OutboxEvent",
     "Portfolio",

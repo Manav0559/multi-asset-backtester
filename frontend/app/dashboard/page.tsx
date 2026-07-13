@@ -9,8 +9,9 @@ import {
 import Guard from "@/components/Guard";
 import ProvenanceBadge from "@/components/ProvenanceBadge";
 import { api } from "@/lib/api";
-import { Asset, MARKETS, MarketKey, assetsOfMarket } from "@/lib/assets";
+import { Asset, MARKETS, MarketKey, assetsOfMarket, defaultAssetOf } from "@/lib/assets";
 import { macd, rsi, sma } from "@/lib/indicators";
+import { money } from "@/lib/format";
 import { useLive } from "@/lib/live";
 // Named PriceBar to avoid clashing with recharts' <Bar> chart primitive.
 type PriceBar = { time: string; open: number; high: number; low: number; close: number; volume: number };
@@ -27,14 +28,14 @@ function DashboardInner() {
   useEffect(() => {
     api<Asset[]>("/assets").then((a) => {
       setAssets(a);
-      const first = assetsOfMarket(a, "nasdaq")[0] ?? a[0];
+      const first = defaultAssetOf(a, "nasdaq") ?? a[0];
       if (first) setSelected(first.id);
     }).catch(() => {});
   }, []);
 
   function switchMarket(m: MarketKey) {
     setMarket(m);
-    const first = assetsOfMarket(assets, m)[0];
+    const first = defaultAssetOf(assets, m);
     if (first) setSelected(first.id);
   }
 
@@ -135,7 +136,7 @@ function DashboardInner() {
       {last && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Stat label={`${asset?.symbol} Price`}
-            value={`$${(displayPrice ?? last.close).toFixed(priceDigits)}`}
+            value={money(displayPrice ?? last.close, asset?.currency, priceDigits)}
             badge={<ProvenanceBadge provenance={live.provenance}
               title={live.status?.label ?? undefined} />} />
           <Stat label="Change (1d)" value={`${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}

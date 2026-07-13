@@ -56,20 +56,8 @@ def get_leaderboard(
     db: Session = Depends(get_db),
 ) -> list[LeaderboardEntryOut]:
     query_start = time_mod.perf_counter()
-    latest_close = (
-        select(OhlcvBar.close)
-        .where(OhlcvBar.asset_id == Position.asset_id)
-        .order_by(OhlcvBar.time.desc())
-        .limit(1)
-        .correlate(Position)
-        .scalar_subquery()
-    )
-    positions_value = (
-        select(func.coalesce(func.sum(Position.qty * func.coalesce(latest_close, 0)), 0))
-        .where(Position.portfolio_id == Portfolio.id, Position.qty != 0)
-        .correlate(Portfolio)
-        .scalar_subquery()
-    )
+    from app.services.valuation import usd_positions_value_subquery
+    positions_value = usd_positions_value_subquery()
     equity = Portfolio.cash_balance + positions_value
 
     if window == "all":

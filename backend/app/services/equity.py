@@ -54,13 +54,19 @@ def equity_histories(
     qtys: dict[uuid.UUID, dict[int, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     marks: dict[uuid.UUID, dict[int, Decimal]] = defaultdict(dict)
 
+    # Fill prices and closes are in each ASSET's quote currency; the ledger is
+    # USD — marks divide by the same per-asset FX factor the SQL valuations use.
+    from app.services.valuation import usd_factors
+    _fx = usd_factors(db, {r.asset_id for r in rows if r.asset_id is not None})
+
     for r in rows:
         if r.asset_id is not None:  # trade-backed entry: update replayed position
             signed = r.qty if r.side == OrderSide.BUY else -r.qty
             qtys[r.portfolio_id][r.asset_id] += signed
             marks[r.portfolio_id][r.asset_id] = r.fill_price
         pos_value = sum(
-            (q * marks[r.portfolio_id][a] for a, q in qtys[r.portfolio_id].items() if q),
+            (q * marks[r.portfolio_id][a] / _fx.get(a, Decimal("1"))
+             for a, q in qtys[r.portfolio_id].items() if q),
             Decimal("0"),
         )
         curves[r.portfolio_id].append(EquityPoint(
@@ -78,7 +84,8 @@ def equity_histories(
         if not points or not held:
             continue
         pos_value = sum(
-            (q * (latest_price(db, a) or marks[pid][a]) for a, q in held.items()),
+            (q * (latest_price(db, a) or marks[pid][a]) / _fx.get(a, Decimal("1"))
+             for a, q in held.items()),
             Decimal("0"),
         )
         cash = points[-1].cash
