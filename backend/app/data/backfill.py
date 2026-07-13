@@ -46,7 +46,11 @@ def ensure_asset(db: Session, symbol: str, exchange: str,
         select(Asset.id).where(Asset.symbol == symbol, Asset.exchange == exchange)
     )
     if asset_id is None:
-        asset = Asset(symbol=symbol, exchange=exchange, asset_class=asset_class)
+        # Quote currency follows the venue: NSE/BSE quote in rupees. Getting
+        # this wrong isn't cosmetic — the ledger converts fills through it.
+        currency = "INR" if exchange.upper() in ("NSE", "BSE") else "USD"
+        asset = Asset(symbol=symbol, exchange=exchange, asset_class=asset_class,
+                      currency=currency)
         db.add(asset)
         db.commit()
         db.refresh(asset)

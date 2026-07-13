@@ -141,7 +141,22 @@ def execute_market_order(
     if price is None:
         raise ExecutionError("no market price available for asset")
 
-    notional = (price * qty).quantize(_CENTS, rounding=ROUND_HALF_UP)
+    # Multi-currency: `price` is in the ASSET's quote currency (NSE → INR);
+    # cash is USD. Convert the notional through the stored FX rate — and if no
+    # rate was ever fetched, REJECT: a wrong-unit ledger entry is strictly
+    # worse than a rejected order (the CHECK constraint catches signs, not
+    # units). fill_price/avg_entry stay in asset currency; ledger cash in USD.
+    from app.models import Asset as _Asset
+    from app.services.fx import usd_rate
+    asset_ccy = db.scalar(select(_Asset.currency).where(_Asset.id == asset_id)) or "USD"
+    fx = usd_rate(db, asset_ccy)
+    if fx is None or fx <= 0:
+        raise ExecutionError(
+            f"no FX rate for {asset_ccy}->USD — cannot convert this trade "
+            f"honestly (rate feed has never run)")
+
+    notional_ccy = (price * qty)
+    notional = (notional_ccy / fx).quantize(_CENTS, rounding=ROUND_HALF_UP)  # USD
     commission = _commission(notional)
 
     position = db.get(Position, (portfolio_id, asset_id))
@@ -226,10 +241,14 @@ def execute_market_order(
         cash_delta = notional - commission
 
     # Signed ledger entry with running balance (self-verifying audit trail).
+    # Non-USD fills record the quote currency AND the rate used — the ledger
+    # must be replayable without asking "what was the rate that day".
+    note = (f"{side.value} {qty} @ {price}" if asset_ccy == "USD" else
+            f"{side.value} {qty} @ {price} {asset_ccy} (USD{asset_ccy} {fx})")
     db.add(LedgerEntry(
         portfolio_id=portfolio_id, trade_id=trade.id, entry_type=entry_type,
         amount=cash_delta.quantize(_CENTS), balance_after=portfolio.cash_balance,
-        note=f"{side.value} {qty} @ {price}",
+        note=note,
     ))
 
     # (3b) Bump version so clients can detect stale state after reconnect.

@@ -28,21 +28,10 @@ def snapshot_portfolio_equity(db: Session, at: datetime | None = None) -> int:
     """Append one equity snapshot per portfolio. Returns rows written."""
     now = at or datetime.now(timezone.utc)
 
-    latest_close = (
-        select(OhlcvBar.close)
-        .where(OhlcvBar.asset_id == Position.asset_id)
-        .order_by(OhlcvBar.time.desc())
-        .limit(1)
-        .correlate(Position)
-        .scalar_subquery()
-    )
-    positions_value = (
-        select(func.coalesce(
-            func.sum(Position.qty * func.coalesce(latest_close, Position.avg_entry_price)), 0))
-        .where(Position.portfolio_id == Portfolio.id, Position.qty != 0)
-        .correlate(Portfolio)
-        .scalar_subquery()
-    )
+    # Marks + FX conversion live in ONE shared definition (services/valuation)
+    # so the beat and the leaderboard can never disagree about equity.
+    from app.services.valuation import usd_positions_value_subquery
+    positions_value = usd_positions_value_subquery()
     result = db.execute(
         insert(PortfolioEquitySnapshot).from_select(
             ["portfolio_id", "time", "cash", "equity"],
