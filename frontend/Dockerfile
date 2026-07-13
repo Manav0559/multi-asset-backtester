@@ -12,7 +12,12 @@ COPY . .
 # The /api rewrite destination is resolved AT BUILD TIME into routes-manifest,
 # so the backend URL must be known here — runtime env is too late in standalone.
 ARG BACKEND_URL=http://backend:8000
+# NEXT_PUBLIC_* vars are INLINED into the client bundle at build time too: a
+# hosted deploy must pass the public WS origin here (e.g. api.yourdomain.com)
+# or browsers will try ws://localhost:8000. Empty default = dev fallback.
+ARG NEXT_PUBLIC_WS_HOST=""
 ENV BACKEND_URL=$BACKEND_URL \
+    NEXT_PUBLIC_WS_HOST=$NEXT_PUBLIC_WS_HOST \
     NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
