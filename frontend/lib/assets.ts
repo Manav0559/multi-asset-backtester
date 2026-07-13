@@ -36,6 +36,24 @@ export function assetsOfMarket(assets: Asset[], market: MarketKey): Asset[] {
   return assets.filter(m.match).sort((a, b) => a.symbol.localeCompare(b.symbol));
 }
 
+// Default selection per market: the liveliest symbol, not the alphabetical
+// first (crypto's A-first pick was ADAUSDT — sparse trades made "LIVE" look
+// frozen; BTC visibly ticks).
+const PREFERRED_DEFAULT: Record<MarketKey, string[]> = {
+  nasdaq: ["AAPL", "NVDA", "MSFT"],
+  nifty: ["RELIANCE", "TCS"],
+  crypto: ["BTCUSDT", "ETHUSDT"],
+};
+
+export function defaultAssetOf(assets: Asset[], market: MarketKey): Asset | undefined {
+  const scoped = assetsOfMarket(assets, market);
+  for (const sym of PREFERRED_DEFAULT[market] ?? []) {
+    const hit = scoped.find((a) => a.symbol === sym);
+    if (hit) return hit;
+  }
+  return scoped[0];
+}
+
 export function groupAssets(assets: Asset[]): AssetGroup[] {
   const buckets: AssetGroup[] = GROUPS.map((g) => ({ label: g.label, items: [] }));
   const other: AssetGroup = { label: "Other", items: [] };

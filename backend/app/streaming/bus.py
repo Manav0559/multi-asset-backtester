@@ -23,6 +23,13 @@ from app.streaming.envelope import Bar, Depth, Tick
 # snapshot expires rather than lying.
 SNAPSHOT_TTL_S = 10
 
+# Trade ticks keep a much longer snapshot: sparse symbols (ADA can go minutes
+# between trades) were expiring INSIDE their own trade gaps, so late joiners
+# saw None and the price card froze under a LIVE badge. The payload carries
+# `ts`, so consumers always see how old the last trade is — a dated value is
+# honest; a blank is not.
+TICK_SNAPSHOT_TTL_S = 900
+
 
 def tick_channel(exchange: str, symbol: str) -> str:
     return f"tick:{exchange}:{symbol}"
@@ -70,7 +77,7 @@ class TickBus:
         await self.redis.publish(tick_channel(tick.exchange, tick.symbol), payload)
         # Cache the last value so a late-joining browser sees a price immediately.
         await self.redis.set(tick_snapshot_key(tick.exchange, tick.symbol),
-                             payload, ex=SNAPSHOT_TTL_S)
+                             payload, ex=TICK_SNAPSHOT_TTL_S)
 
     async def publish_bar(self, bar: Bar) -> None:
         await self.redis.publish(
