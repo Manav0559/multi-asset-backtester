@@ -58,6 +58,18 @@ function AssetPageInner() {
   const [pickerValue, setPickerValue] = useState("");
 
   const { data: assets } = useSWR<Asset[]>("/assets", fetcher);
+  // Only offer timeframes this asset actually has bars for (most equities are
+  // 1d-only) — an empty chart made every indicator on it look broken.
+  const { data: tfAvail } = useSWR<Record<string, { timeframe: string; bars: number }[]>>(
+    Number.isFinite(assetId) ? `/assets/timeframes?ids=${assetId}` : null, fetcher,
+    { revalidateOnFocus: false });
+  const availableTfs = tfAvail?.[String(assetId)]?.map((t) => t.timeframe) ?? null;
+  useEffect(() => {
+    if (availableTfs && availableTfs.length && !availableTfs.includes(timeframe)) {
+      setTimeframe(availableTfs[availableTfs.length - 1]); // coarsest available
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableTfs?.join(",")]);
   const asset = assets?.find((a) => a.id === assetId);
   const isCrypto = asset?.asset_class === "crypto";
   const live = useLive(assetId);
@@ -149,10 +161,9 @@ function AssetPageInner() {
 
           <select className="input w-28 !py-1.5 text-xs" value={timeframe}
             onChange={(e) => setTimeframe(e.target.value)}>
-            <option value="1m">1m</option>
-            <option value="15m">15m</option>
-            <option value="1h">1h</option>
-            <option value="1d">1D</option>
+            {(availableTfs ?? ["1d"]).map((tf) => (
+              <option key={tf} value={tf}>{tf === "1d" ? "1D" : tf}</option>
+            ))}
           </select>
 
           {/* indicator picker — the whole IndicatorService catalog */}

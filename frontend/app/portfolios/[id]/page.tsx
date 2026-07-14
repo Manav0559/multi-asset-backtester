@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import {
   Area, AreaChart, CartesianGrid, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
@@ -12,11 +12,13 @@ import { OnlineUser, PresenceAvatars } from "@/components/Presence";
 import { EmptyState, Skeleton, SkeletonRows } from "@/components/ui";
 import { useToast } from "@/components/ToastProvider";
 import { api } from "@/lib/api";
-import { Asset, groupAssets } from "@/lib/assets";
+import { currentUserId } from "@/lib/auth";
+import { Asset } from "@/lib/assets";
+import AssetPicker from "@/components/AssetPicker";
 import { money } from "@/lib/format";
 import { Hub } from "@/lib/ws";
 
-type Portfolio = { id: string; name: string; cash_balance: string; initial_cash: string; version: number };
+type Portfolio = { id: string; name: string; owner_id: string; cash_balance: string; initial_cash: string; version: number };
 type Position = { asset_id: number; qty: string; avg_entry_price: string; realized_pnl: string };
 type Ledger = { id: number; entry_type: string; amount: string; balance_after: string; note: string | null; created_at: string };
 type EquityPoint = { time: string; cash: string; equity: string };
@@ -192,14 +194,7 @@ function PortfolioDetail() {
           <h2 className="text-sm font-medium">Place order</h2>
           <div>
             <label className="label">Asset</label>
-            <select className="input" value={assetId ?? ""}
-              onChange={(e) => setAssetId(Number(e.target.value))}>
-              {groupAssets(assets).map((g) => (
-                <optgroup key={g.label} label={g.label}>
-                  {g.items.map((a) => <option key={a.id} value={a.id}>{a.symbol}</option>)}
-                </optgroup>
-              ))}
-            </select>
+            <AssetPicker assets={assets} value={assetId} onChange={setAssetId} />
           </div>
           <div className="grid grid-cols-2 gap-2">
             <button type="button" onClick={() => setSide("buy")}
@@ -280,6 +275,53 @@ function PortfolioDetail() {
           </tbody>
         </table>
       </div>
+
+      <DangerZone portfolio={pf} />
+    </div>
+  );
+}
+
+function DangerZone({ portfolio }: { portfolio: Portfolio }) {
+  const router = useRouter();
+  const toast = useToast();
+  const isOwner = currentUserId() === portfolio.owner_id;
+  const [busy, setBusy] = useState(false);
+
+  async function run(kind: "delete" | "leave") {
+    const verb = kind === "delete" ? "delete" : "leave";
+    if (!window.confirm(
+      kind === "delete"
+        ? `Delete “${portfolio.name}” for everyone? This removes all positions, orders and history. This cannot be undone.`
+        : `Leave “${portfolio.name}”? You'll lose access unless re-invited.`)) return;
+    setBusy(true);
+    try {
+      if (kind === "delete") await api(`/portfolios/${portfolio.id}`, { method: "DELETE" });
+      else await api(`/portfolios/${portfolio.id}/leave`, { method: "POST" });
+      toast.success(`Portfolio ${verb === "delete" ? "deleted" : "left"}`);
+      router.push("/portfolios");
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="card p-5 border-down/30">
+      <h2 className="text-sm font-medium text-down mb-1">Danger zone</h2>
+      <p className="text-xs text-muted mb-3">
+        {isOwner ? "As owner, deleting removes this shared portfolio for all members."
+                 : "Leave this shared portfolio. The owner keeps it."}
+      </p>
+      {isOwner ? (
+        <button onClick={() => run("delete")} disabled={busy}
+          className="btn bg-down/90 text-white text-sm active:scale-95">
+          Delete portfolio
+        </button>
+      ) : (
+        <button onClick={() => run("leave")} disabled={busy}
+          className="btn-ghost border border-down/40 text-down text-sm active:scale-95">
+          Leave portfolio
+        </button>
+      )}
     </div>
   );
 }

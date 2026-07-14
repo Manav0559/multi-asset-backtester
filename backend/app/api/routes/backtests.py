@@ -8,7 +8,7 @@ backtest config selects the engine strategy.
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -175,7 +175,8 @@ def submit_backtest(body: BacktestCreate, user: User = Depends(get_current_user)
 
     # Human label for result tables: the user's own strategy name makes
     # "custom_code" rows recognizable ("my golden cross v2", not the key).
-    label = db.scalar(select(Strategy.name).where(Strategy.id == sv.strategy_id))
+    label = (body.name.strip() if body.name and body.name.strip()
+             else db.scalar(select(Strategy.name).where(Strategy.id == sv.strategy_id)))
     config = {
         "asset_id": body.asset_id, "asset_ids": body.asset_ids,
         "timeframe": body.timeframe,
@@ -199,6 +200,20 @@ def submit_backtest(body: BacktestCreate, user: User = Depends(get_current_user)
     from app.backtest.tasks import run_backtest_task
     run_backtest_task.delay(str(bt.id))
     return bt
+
+
+@router.delete("/backtests/{backtest_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_backtest(backtest_id: uuid.UUID, user: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)) -> None:
+    """Remove a backtest result you own (row + yearly breakdown). Non-owners
+    404 (not 403) so result ids can't be probed."""
+    bt = db.get(Backtest, backtest_id)
+    if bt is None or bt.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "backtest not found")
+    db.execute(sa_delete(BacktestYearlyResult)
+               .where(BacktestYearlyResult.backtest_id == backtest_id))
+    db.delete(bt)
+    db.commit()
 
 
 @router.get("/backtests", response_model=list[BacktestOut])

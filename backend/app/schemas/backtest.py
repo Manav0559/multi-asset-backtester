@@ -13,6 +13,7 @@ class StrategyCreate(BaseModel):
 
 class BacktestCreate(BaseModel):
     strategy_version_id: uuid.UUID
+    name: str | None = Field(default=None, max_length=120)  # user's label for the run
     asset_id: int | None = None                 # single-asset strategies
     asset_ids: list[int] | None = None          # multi-asset / long-short strategies
     timeframe: str = "1d"

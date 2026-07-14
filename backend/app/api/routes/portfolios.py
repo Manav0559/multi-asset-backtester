@@ -105,6 +105,19 @@ def delete_portfolio(portfolio_id: uuid.UUID,
     db.commit()
 
 
+@router.post("/{portfolio_id}/leave", status_code=status.HTTP_204_NO_CONTENT)
+def leave_portfolio(portfolio_id: uuid.UUID,
+                    member: PortfolioMember = Depends(require_portfolio_role(PortfolioRole.VIEWER)),
+                    db: Session = Depends(get_db)) -> None:
+    """Walk away from a shared portfolio. The OWNER can't leave (the book's
+    cash has to belong to someone) — they delete the portfolio instead."""
+    if member.role == PortfolioRole.OWNER:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "the owner cannot leave — delete the portfolio instead")
+    db.delete(member)
+    db.commit()
+
+
 @router.get("/{portfolio_id}/members", response_model=list[MemberOut])
 def list_members(portfolio_id: uuid.UUID,
                  member: PortfolioMember = Depends(require_portfolio_role(PortfolioRole.VIEWER)),

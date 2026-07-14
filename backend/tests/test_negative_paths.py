@@ -161,27 +161,6 @@ def test_sandbox_rejects_obvious_resource_abuse_shapes():
             index=pd.date_range("2024-01-01", periods=2, tz="UTC")))
 
 
-# ----------------------------------------------------- zero-snapshot board --
-def test_windowed_leaderboard_without_snapshots_degrades_to_all_time(client, np_env):
-    """A brand-new public portfolio has no snapshot at or before the window
-    cutoff (the beat may write CURRENT ones — those are > cutoff and must be
-    ignored). Windowed return falls back to the initial-cash baseline and the
-    board must not error or produce NULL ranks."""
-    headers = np_env["user"]["headers"]
-    pid = _portfolio(client, headers, cash="1000.00", public=True)
-
-    results = {}
-    for window in ("all", "24h", "7d"):
-        r = client.get(f"/leaderboard?limit=100&window={window}", headers=headers)
-        assert r.status_code == 200, r.text
-        entry = next(e for e in r.json() if e["portfolio_id"] == pid)
-        assert entry["rank"] >= 1
-        results[window] = entry["return_pct"]
-
-    assert results["24h"] == results["all"]
-    assert results["7d"] == results["all"]
-
-
 def test_worker_hardening_config():
     """The worker's self-defense flags stay pinned — a regression here is
     silent until a production incident (task hoarding, leaky-child bloat)."""

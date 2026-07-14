@@ -24,12 +24,6 @@ HTTP_LATENCY = Histogram(
     buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
 )
 
-LEADERBOARD_QUERY_TIME = Histogram(
-    "leaderboard_query_duration_seconds",
-    "Wall-clock time of the leaderboard ranking query (SQL + serialization)",
-    ["window"],  # 24h | 7d | all — fixed set, bounded cardinality
-    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5),
-)
 
 BACKTEST_DURATION = Histogram(
     "backtest_duration_seconds",
