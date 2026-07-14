@@ -1,28 +1,20 @@
-"""Synchronous Redis publisher for portfolio ledger events.
+"""Portfolio event publishing + a small in-memory rate limiter.
 
-Order execution is a synchronous SELECT-FOR-UPDATE transaction, so we
-publish its resulting event with a sync Redis client (not the async bus).
-Events go to portfolio:{id}; the WS hub relays them to every collaborator
-connected to that channel — this is what makes User B's screen update the
-instant User A trades.
+Single-process deployment: events go to the in-process bus (app/streaming/
+inproc_bus), which fans them out to the WebSocket hub. This is what makes User
+B's screen update the instant User A trades.
 
 CRITICAL: callers must publish only AFTER the DB transaction commits, so a
 rolled-back trade can never surface on a teammate's screen.
 """
 from __future__ import annotations
 
-import json
+import threading
+import time
 import uuid
-from functools import lru_cache
+from collections import defaultdict
 
-import redis
-
-from app.core.config import settings
-
-
-@lru_cache(maxsize=1)
-def _client() -> redis.Redis:
-    return redis.from_url(settings.REDIS_URL, decode_responses=True)
+from app.streaming.inproc_bus import bus
 
 
 def portfolio_channel(portfolio_id: uuid.UUID) -> str:
@@ -30,28 +22,35 @@ def portfolio_channel(portfolio_id: uuid.UUID) -> str:
 
 
 def publish_portfolio_event(portfolio_id: uuid.UUID, event: dict) -> None:
-    _client().publish(portfolio_channel(portfolio_id), json.dumps(event))
+    bus.publish(portfolio_channel(portfolio_id), event)
+
+
+# ---------------------------------------------------------- rate limit --
+# Fixed-window counters in process memory. On one web process this is exact;
+# it also fails OPEN (never raises) — availability over strictness for a paper
+# venue, matching the old Redis behavior. Guarded by a lock (callers span the
+# event loop + the sync threadpool).
+_rl_lock = threading.Lock()
+_rl_counts: dict[str, tuple[int, float]] = defaultdict(lambda: (0, 0.0))
 
 
 def fixed_window_allow(key: str, limit: int, window_s: int) -> bool:
-    """Redis fixed-window rate limit. True if the action is allowed. Fails OPEN
-    if Redis is unreachable (availability over strictness for a trading
-    simulator; the hard invariants live in Postgres)."""
-    try:
-        c = _client()
-        n = c.incr(key)
-        if n == 1:
-            c.expire(key, window_s)
-        return n <= limit
-    except redis.RedisError:
-        return True
+    """True if the action is allowed within the current fixed window."""
+    now = time.time()
+    with _rl_lock:
+        count, window_start = _rl_counts[key]
+        if now - window_start >= window_s:
+            _rl_counts[key] = (1, now)
+            return True
+        _rl_counts[key] = (count + 1, window_start)
+        return count + 1 <= limit
 
 
 # ---------------------------------------------------------------- outbox --
 def mark_outbox_published(outbox_id: int) -> None:
-    """Fast-path bookkeeping after a successful publish. Its own tiny
-    transaction; if THIS write is lost to a crash the relay re-publishes the
-    event — at-least-once, and consumers dedupe by order_id/version."""
+    """Bookkeeping after a successful publish. Its own tiny transaction; if this
+    write is lost to a crash the relay re-publishes the event (at-least-once —
+    consumers dedupe by order_id/version)."""
     from sqlalchemy import func, update
 
     from app.db.session import SessionLocal
@@ -64,10 +63,9 @@ def mark_outbox_published(outbox_id: int) -> None:
 
 
 def relay_outbox(limit: int = 500, retain_days: int = 7) -> dict:
-    """Sweep unpublished outbox rows (a process died between DB commit and its
-    Redis publish) and re-publish them in id order. SKIP LOCKED so concurrent
-    relays never double-publish a row. Also prunes published rows older than
-    `retain_days` so the table can't grow without bound."""
+    """Re-publish outbox rows whose fast-path publish never happened (a crash
+    between DB commit and the in-process publish), then prune old published
+    rows. Run periodically by the scheduler."""
     from datetime import datetime, timedelta, timezone
 
     from sqlalchemy import delete, select
@@ -82,12 +80,9 @@ def relay_outbox(limit: int = 500, retain_days: int = 7) -> dict:
             .order_by(OutboxEvent.id).limit(limit)
             .with_for_update(skip_locked=True)
         ).scalars().all()
-        now = datetime.now(timezone.utc)  # a real datetime, NOT func.now():
-        # the prune DELETE below synchronizes the session by EVALUATING its
-        # WHERE clause against in-memory rows, and a SQL clause can't be
-        # boolean-compared in Python.
+        now = datetime.now(timezone.utc)
         for row in rows:
-            _client().publish(row.channel, json.dumps(row.payload))
+            bus.publish(row.channel, row.payload)
             row.published_at = now
             published += 1
         cutoff = datetime.now(timezone.utc) - timedelta(days=retain_days)

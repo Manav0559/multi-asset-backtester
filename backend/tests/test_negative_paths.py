@@ -79,12 +79,13 @@ def _portfolio(client, headers, cash="1000.00", public=False) -> str:
     return r.json()["id"]
 
 
-# ------------------------------------------------------------ worker down --
-def test_backtest_stays_queued_when_worker_down(client, np_env, monkeypatch):
-    """delay() publishing into a broker with no consumer must not change API
-    behavior: 202 on submit, row visible and QUEUED on read, no blocking."""
-    from app.backtest.tasks import run_backtest_task
-    monkeypatch.setattr(run_backtest_task, "delay", lambda *a, **k: None)
+# ------------------------------------------------------------ submit path --
+def test_backtest_submit_returns_queued(client, np_env, monkeypatch):
+    """Submit returns 202 with a QUEUED row before execution runs. Stub the
+    in-process runner so the row is observed pre-execution (BackgroundTasks
+    would otherwise complete it synchronously under the test client)."""
+    import app.backtest.tasks as tasks_mod
+    monkeypatch.setattr(tasks_mod, "execute_backtest", lambda *a, **k: None)
 
     headers = np_env["user"]["headers"]
     sv = client.post("/strategies", headers=headers,
@@ -125,20 +126,6 @@ def test_order_rejections_over_http(client, np_env):
     assert r.json()["cash_balance"] == "1000.00"
 
 
-# ------------------------------------------------------------ runaway BYOC --
-def test_runaway_custom_code_has_a_kill_switch():
-    """An infinite `while True` in user code survives every memory cap —
-    RLIMIT_AS bounds address space, not CPU time. The enforced backstop is
-    Celery's task_time_limit: the prefork parent SIGKILLs the child at the
-    hard limit and the task is recorded failed (run_and_persist marks the
-    row FAILED via its except path on the soft limit)."""
-    from app.backtest.tasks import celery_app
-    from app.core.config import settings
-
-    assert celery_app.conf.task_time_limit == settings.BACKTEST_TIME_LIMIT_S
-    assert 0 < celery_app.conf.task_soft_time_limit < celery_app.conf.task_time_limit
-
-
 def test_sandbox_rejects_obvious_resource_abuse_shapes():
     """The AST gate can't solve halting, but the classic amplification
     primitives users reach for first are simply not in the namespace."""
@@ -159,17 +146,3 @@ def test_sandbox_rejects_obvious_resource_abuse_shapes():
         run_custom_strategy(strategy, pd.DataFrame(
             {"close": [1.0, 2.0]},
             index=pd.date_range("2024-01-01", periods=2, tz="UTC")))
-
-
-def test_worker_hardening_config():
-    """The worker's self-defense flags stay pinned — a regression here is
-    silent until a production incident (task hoarding, leaky-child bloat)."""
-    from app.backtest.tasks import celery_app
-
-    c = celery_app.conf
-    assert c.worker_prefetch_multiplier == 1          # long tasks never hoard
-    assert c.worker_max_tasks_per_child == 20         # bound fragmentation creep
-    assert c.worker_max_memory_per_child == 1_500_000  # retire bloated children
-    assert c.task_acks_late is True
-    assert c.task_reject_on_worker_lost is True
-    assert c.task_time_limit == 600 and c.task_soft_time_limit == 570

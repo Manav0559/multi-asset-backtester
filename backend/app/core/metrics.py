@@ -75,11 +75,6 @@ DB_POOL_SIZE = Gauge(
 )
 
 # ---- async backlog (the honest backpressure signals) ------------------------
-CELERY_QUEUE_DEPTH = Gauge(
-    "celery_queue_depth",
-    "Tasks waiting in the Celery broker queue (sampled by the outbox relay beat)",
-    multiprocess_mode="mostrecent",
-)
 
 OUTBOX_PENDING = Gauge(
     "outbox_pending_events",

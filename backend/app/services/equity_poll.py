@@ -17,13 +17,16 @@ from sqlalchemy import select
 
 from app.models import Asset
 from app.models.enums import AssetClass
-from app.services.events import _client as _redis
 from app.services.market_hours import market_status
 from app.streaming.adapters.yfinance_poll import to_yahoo_symbol
 from app.streaming.base import Subscription
-from app.streaming.bus import tick_channel, tick_snapshot_key
+from app.streaming.inproc_bus import bus
 
 logger = logging.getLogger("equity.poll")
+
+
+def tick_channel(exchange: str, symbol: str) -> str:
+    return f"tick:{exchange}:{symbol}"
 
 # Liquid megacaps that reliably resolve on Yahoo — bounded to keep us well under
 # any rate limit even at a fast cadence.
@@ -48,9 +51,9 @@ def _latest_price(symbol: str, exchange: str, asset_class: AssetClass) -> float 
 
 
 def poll_equity_ticks(db) -> int:
-    """Publish one delayed tick per open-market equity in the poll set. Returns
-    the number of ticks published."""
-    r = _redis()
+    """Publish one delayed tick per open-market equity in the poll set onto the
+    in-process bus (dashboards subscribed to tick:{exchange}:{symbol} update
+    while the market is open). Returns the number of ticks published."""
     published = 0
     for symbol, exchange, asset_class in _POLL:
         if market_status(exchange, asset_class)["is_open"] is not True:
@@ -63,13 +66,11 @@ def poll_equity_ticks(db) -> int:
         price = _latest_price(symbol, exchange, asset_class)
         if price is None:
             continue
-        payload = json.dumps({
+        bus.publish(tick_channel(exchange, symbol), {
             "symbol": symbol, "exchange": exchange, "asset_class": asset_class.value,
             "price": str(price), "volume": "0",
             "ts": datetime.now(timezone.utc).isoformat(),
             "delayed": True,  # provenance: never presented as live
         })
-        r.publish(tick_channel(exchange, symbol), payload)
-        r.set(tick_snapshot_key(exchange, symbol), payload, ex=_SNAPSHOT_TTL_S)
         published += 1
     return published

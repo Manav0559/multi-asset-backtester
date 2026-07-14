@@ -1,109 +1,31 @@
-# Render Blueprint — one-click backend deploy (frontend goes to Vercel).
+# Render Blueprint — free-tier "Portfolio Showcase Mode".
 #
-# Renders' MANAGED Postgres has no TimescaleDB extension, and migration 0001
-# creates a hypertable, so we self-host TimescaleDB as a private Docker service
-# with a persistent disk. Everything else (web API, Celery worker, live ticker,
-# Redis) is wired automatically; the only value you may want to review is the
-# CORS origin once your Vercel URL is known.
+# ONE service: the FastAPI web process. No database, no Redis, no workers — the
+# app runs backtests in-process (FastAPI BackgroundTasks), fans WebSocket events
+# out over an in-process bus, and drives periodic jobs with an asyncio
+# scheduler. Bring your own free Postgres (Neon/Supabase) via DATABASE_URL.
 #
-# Cost note: the DB private service + its disk and the background workers are
-# paid instances (Starter ≈ $7/mo each). Redis has a free tier. The ticker
-# (live crypto feed) is optional — delete it to save an instance; equities and
-# backtests are unaffected.
-
-envVarGroups:
-  # Shared Postgres credentials — defined ONCE, read by both the DB service and
-  # the app (which assembles DATABASE_URL from these; see core/config.py).
-  - name: postgres
-    envVars:
-      - key: POSTGRES_USER
-        value: postgres
-      - key: POSTGRES_DB
-        value: backtester
-      - key: POSTGRES_HOST
-        value: backtester-db          # internal DNS = the pserv name below
-      - key: POSTGRES_PORT
-        value: "5432"
-      - key: POSTGRES_PASSWORD
-        generateValue: true           # generated once, shared everywhere
+# Free web services sleep after ~15 min idle and cold-start in ~30s — fine for a
+# demo link. Migrations run at container start (the free plan has no pre-deploy
+# hook); they're idempotent.
 
 services:
-  # ---- TimescaleDB (self-hosted; managed PG lacks the extension) ----------
-  - type: pserv
-    name: backtester-db
-    runtime: image
-    image:
-      url: docker.io/timescale/timescaledb:latest-pg16
-    plan: starter
-    disk:
-      name: pgdata
-      mountPath: /var/lib/postgresql/data
-      sizeGB: 10
-    envVars:
-      - fromGroup: postgres
-
-  # ---- Redis (pub/sub fan-out + Celery broker/results) --------------------
-  - type: redis
-    name: backtester-redis
-    plan: free
-    maxmemoryPolicy: noeviction       # an evicting broker corrupts Celery state
-    ipAllowList: []                   # internal-only (no public access)
-
-  # ---- FastAPI web API ----------------------------------------------------
   - type: web
-    name: backtester-api
+    name: backtester
     runtime: docker
-    plan: starter
+    plan: free
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     healthCheckPath: /health
-    # Migrations run before each deploy goes live (idempotent).
-    preDeployCommand: "alembic upgrade head"
-    dockerCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    dockerCommand: "sh -c 'alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT'"
     envVars:
-      - fromGroup: postgres
-      - key: REDIS_URL
-        fromService: { type: redis, name: backtester-redis, property: connectionString }
-      - key: CELERY_BROKER_URL
-        fromService: { type: redis, name: backtester-redis, property: connectionString }
-      - key: CELERY_RESULT_BACKEND
-        fromService: { type: redis, name: backtester-redis, property: connectionString }
-      # Set to your Vercel URL after the frontend deploys (comma-separated ok).
+      # Paste your Neon/Supabase pooled connection string here (in the Render
+      # dashboard). Must start with postgresql+psycopg2://
+      - key: DATABASE_URL
+        sync: false
+      # Your Vercel URL, once the frontend is deployed (e.g. https://…vercel.app).
       - key: CORS_ORIGINS
         sync: false
-
-  # ---- Celery worker + embedded beat (backtests, snapshots, FX, bar append) --
-  - type: worker
-    name: backtester-worker
-    runtime: docker
-    plan: starter
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
-    dockerCommand: "celery -A app.backtest.tasks:celery_app worker -B --loglevel=info --concurrency=2"
-    envVars:
-      - fromGroup: postgres
-      - key: REDIS_URL
-        fromService: { type: redis, name: backtester-redis, property: connectionString }
-      - key: CELERY_BROKER_URL
-        fromService: { type: redis, name: backtester-redis, property: connectionString }
-      - key: CELERY_RESULT_BACKEND
-        fromService: { type: redis, name: backtester-redis, property: connectionString }
-      - key: PROMETHEUS_MULTIPROC_DIR
-        value: /tmp/prometheus
-      # Pin BLAS/OpenMP to 1 thread per prefork child (numpy/sklearn/xgboost).
-      - { key: OMP_NUM_THREADS, value: "1" }
-      - { key: OPENBLAS_NUM_THREADS, value: "1" }
-      - { key: MKL_NUM_THREADS, value: "1" }
-
-  # ---- Live crypto ticker (OPTIONAL — delete to save one instance) --------
-  - type: worker
-    name: backtester-ticker
-    runtime: docker
-    plan: starter
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
-    dockerCommand: "python -m app.streaming.supervisor"
-    envVars:
-      - fromGroup: postgres
-      - key: REDIS_URL
-        fromService: { type: redis, name: backtester-redis, property: connectionString }
+      # Generated once; overrides the insecure dev default.
+      - key: JWT_SECRET
+        generateValue: true

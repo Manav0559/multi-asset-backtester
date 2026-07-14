@@ -65,30 +65,24 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Fixed-window per-client rate limit (default 120 req / 60s), keyed on the
-    JWT subject when present, else the client IP. Backed by Redis so the limit is
-    shared across web replicas. Fails open if Redis is down.
+    JWT subject when present, else the client IP. In-process counters (single
+    web process) — exact here, and an abuse backstop, not a smoother.
 
-    A fixed window is deliberately chosen over a token bucket: it's a single
-    atomic INCR+EXPIRE, cheap, and good enough as an abuse backstop (precise
-    smoothing is not the goal here).
+    A fixed window is deliberately chosen over a token bucket: a single counter
+    per (client, window), cheap, and good enough. Stale windows are pruned
+    lazily so the map can't grow without bound.
     """
 
     # Paths that must never be rate limited (liveness probes, Prometheus
     # scrapes, WS upgrade).
     EXEMPT_PREFIXES = ("/health", "/metrics", "/ws", "/docs", "/openapi.json", "/redoc")
 
-    def __init__(self, app, redis_url: str, limit: int = 120, window_seconds: int = 60):
+    def __init__(self, app, limit: int = 120, window_seconds: int = 60):
         super().__init__(app)
-        self._redis_url = redis_url
         self._limit = limit
         self._window = window_seconds
-        self._redis = None  # lazily created; None until first request
-
-    def _client(self):
-        if self._redis is None:
-            import redis  # local import: keep the module importable without redis
-            self._redis = redis.Redis.from_url(self._redis_url, socket_timeout=0.25)
-        return self._redis
+        self._counts: dict[str, int] = {}
+        self._window_id = 0
 
     def _identity(self, request: Request) -> str:
         auth = request.headers.get("Authorization", "")
@@ -103,15 +97,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         window = int(time.time()) // self._window
-        key = f"rl:{self._identity(request)}:{window}"
-        try:
-            client = self._client()
-            count = client.incr(key)
-            if count == 1:
-                client.expire(key, self._window)
-        except Exception:  # noqa: BLE001 — degrade open on any cache failure
-            logger.warning("rate_limit_bypassed_redis_down")
-            return await call_next(request)
+        if window != self._window_id:      # new window: reset all counters
+            self._counts = {}
+            self._window_id = window
+        key = self._identity(request)
+        count = self._counts.get(key, 0) + 1
+        self._counts[key] = count
 
         if count > self._limit:
             retry_after = self._window - (int(time.time()) % self._window)

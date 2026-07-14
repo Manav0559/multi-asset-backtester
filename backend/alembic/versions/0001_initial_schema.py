@@ -65,11 +65,23 @@ ALL_ENUMS = [
 ]
 
 
+def _timescale_available(bind) -> bool:
+    """True only when the timescaledb extension can be created. Vanilla Postgres
+    (Neon/Supabase/free tier) doesn't ship it, so the schema degrades to a plain
+    table there — the app SQL is vanilla-compatible; only compression/chunking
+    is Timescale-specific."""
+    return bool(bind.exec_driver_sql(
+        "SELECT 1 FROM pg_available_extensions WHERE name = 'timescaledb'"
+    ).first())
+
+
 def upgrade() -> None:
     bind = op.get_bind()
+    has_timescale = _timescale_available(bind)
 
-    # --- TimescaleDB extension (no-op if the image already installed it) ---
-    op.execute("CREATE EXTENSION IF NOT EXISTS timescaledb")
+    # --- TimescaleDB extension (only where it's available) ---
+    if has_timescale:
+        op.execute("CREATE EXTENSION IF NOT EXISTS timescaledb")
 
     for enum_type in ALL_ENUMS:
         enum_type.create(bind, checkfirst=True)
@@ -341,37 +353,32 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("asset_id", "timeframe", "time", name="pk_ohlcv_bars"),
     )
 
-    # Convert to hypertable:
-    #   - 1-day chunks (moderate ingestion: 1-10M rows/day)
-    #   - hash space-partitioning on asset_id across 4 partitions for
-    #     parallel I/O over a wide concurrent ticker universe
-    #   - skip Timescale's default lone `time` index; the composite PK
-    #     already covers our query patterns
-    op.execute(
-        """
-        SELECT create_hypertable(
-            'ohlcv_bars', 'time',
-            partitioning_column   => 'asset_id',
-            number_partitions     => 4,
-            chunk_time_interval   => INTERVAL '1 day',
-            create_default_indexes => FALSE
+    # Timescale-specific storage. On vanilla Postgres ohlcv_bars stays an
+    # ordinary table indexed by the composite PK — correct, just without
+    # hypertable chunking or columnar compression. The application queries
+    # never call a Timescale function, so nothing downstream cares.
+    if has_timescale:
+        op.execute(
+            """
+            SELECT create_hypertable(
+                'ohlcv_bars', 'time',
+                partitioning_column   => 'asset_id',
+                number_partitions     => 4,
+                chunk_time_interval   => INTERVAL '1 day',
+                create_default_indexes => FALSE
+            )
+            """
         )
-        """
-    )
-
-    # Native columnar compression for chunks older than 7 days:
-    # segment by (asset_id, timeframe) so per-ticker scans stay cheap on
-    # compressed chunks; order by time DESC to match read patterns.
-    op.execute(
-        """
-        ALTER TABLE ohlcv_bars SET (
-            timescaledb.compress,
-            timescaledb.compress_segmentby = 'asset_id, timeframe',
-            timescaledb.compress_orderby   = 'time DESC'
+        op.execute(
+            """
+            ALTER TABLE ohlcv_bars SET (
+                timescaledb.compress,
+                timescaledb.compress_segmentby = 'asset_id, timeframe',
+                timescaledb.compress_orderby   = 'time DESC'
+            )
+            """
         )
-        """
-    )
-    op.execute("SELECT add_compression_policy('ohlcv_bars', INTERVAL '7 days')")
+        op.execute("SELECT add_compression_policy('ohlcv_bars', INTERVAL '7 days')")
 
 
 def downgrade() -> None:

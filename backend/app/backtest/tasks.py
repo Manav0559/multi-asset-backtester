@@ -1,22 +1,15 @@
-"""Celery app + backtest task with a per-job memory cap.
+"""Backtest execution + periodic maintenance jobs — in-process, no Celery.
 
-The heavy pandas work runs OUT of the web process, on a Celery worker fed by
-Redis. Each task sets an address-space rlimit (RLIMIT_AS) at start, so a
-runaway backtest (e.g. 20 symbols × 5y of minute bars) is killed with a clean
-MemoryError instead of OOM-ing the box and taking every other job down.
-
-`task_always_eager` can be flipped on in tests to run inline without a worker.
+In free-tier single-process mode, backtests run in FastAPI BackgroundTasks
+(same process, after the response is sent) and the periodic jobs are driven by
+app/scheduler.py. Each function here is a plain callable so both the scheduler
+and the tests can invoke them directly.
 """
 from __future__ import annotations
 
 import logging
-import platform
-import resource
 import time
 import uuid
-
-from celery import Celery
-from celery.signals import worker_ready
 
 from app.backtest.runner import run_and_persist
 from app.core.config import settings
@@ -24,142 +17,10 @@ from app.core.metrics import BACKTEST_DURATION
 
 logger = logging.getLogger("backtest.tasks")
 
-celery_app = Celery(
-    "backtester",
-    broker=settings.CELERY_BROKER_URL,
-    backend=settings.CELERY_RESULT_BACKEND,
-)
-celery_app.conf.update(
-    task_serializer="json",
-    result_serializer="json",
-    accept_content=["json"],
-    task_track_started=True,
-    worker_max_tasks_per_child=20,   # recycle workers to bound memory creep
-    # Long tasks: a child must never hoard queued work while it grinds — with
-    # the default (4x) a 10-minute backtest holds 3 other jobs hostage.
-    worker_prefetch_multiplier=1,
-    # RSS-based recycle (kB), checked AFTER each task completes: a child that
-    # finished bloated is retired instead of fragmenting the next job. This
-    # complements (never replaces) the RLIMIT_AS hard cap, which stops a task
-    # DURING its run. Measured envelope: ML families peak <300MB RSS, so 1.5GB
-    # means only a genuinely leaky child gets recycled.
-    worker_max_memory_per_child=1_500_000,
-    # Runaway-job kill switch (infinite loop in BYOC code, hung data fetch):
-    # soft limit raises SoftTimeLimitExceeded inside the task 30s before the
-    # hard limit SIGKILLs the prefork child. RLIMIT_AS bounds memory; this
-    # bounds TIME — both are needed, neither substitutes for the other.
-    task_time_limit=settings.BACKTEST_TIME_LIMIT_S,
-    task_soft_time_limit=max(settings.BACKTEST_TIME_LIMIT_S - 30, 1),
-    # Crash safety: don't ack a task until it RETURNS, and requeue if the worker
-    # dies mid-task. A cgroup OOM-kill (SIGKILL) runs no except-path, so the
-    # backtest row would otherwise sit RUNNING forever — the reaper below is the
-    # backstop that heals it. acks_late makes at-least-once delivery explicit.
-    task_acks_late=True,
-    task_reject_on_worker_lost=True,
-)
-
-# Periodic equity snapshots feed the windowed (24h/7d) leaderboard. The beat
-# scheduler is embedded in the worker (`celery worker -B`) — one process fewer
-# to deploy, and a single worker is the deployment shape anyway.
-celery_app.conf.beat_schedule = {
-    "portfolio-equity-snapshots": {
-        "task": "portfolio.snapshot_equity",
-        "schedule": settings.EQUITY_SNAPSHOT_INTERVAL_MINUTES * 60.0,
-    },
-    # Heal jobs whose worker died mid-run (SIGKILL/OOM leaves the row RUNNING).
-    "reap-dead-backtests": {
-        "task": "backtest.reap_dead",
-        "schedule": 60.0,
-    },
-    # Delayed equity price poll (yfinance) — feeds the same tick channel as
-    # crypto so equity charts move; badged DELAYED (vendor delay ~15 min).
-    **({"poll-equity-ticks": {
-        "task": "market.poll_equity_ticks",
-        "schedule": float(settings.EQUITY_POLL_INTERVAL_SECONDS),
-    }} if settings.EQUITY_POLL_ENABLED else {}),
-    # Close expired head-to-head competitions and freeze their final metrics.
-    "finish-expired-challenges": {
-        "task": "challenges.finish_expired",
-        "schedule": 60.0,
-    },
-    # Re-publish outbox rows whose fast-path publish died between DB commit
-    # and Redis (the dual-write hole). Normal case: zero rows, one indexed scan.
-    "relay-outbox": {
-        "task": "events.relay_outbox",
-        "schedule": 10.0,
-    },
-    # Spot FX for the multi-currency ledger (USDINR etc.) — hourly is plenty
-    # for a paper venue; execution rejects non-USD fills until the first run.
-    "refresh-fx-rates": {
-        "task": "fx.refresh",
-        "schedule": 3600.0,
-    },
-    # Append yesterday's daily bar for every equity so charts/leaderboards
-    # keep moving after deploy without manual backfills. Crypto bars already
-    # append live via the ticker's kline persister.
-    "append-daily-bars": {
-        "task": "market.append_daily_bars",
-        "schedule": 6 * 3600.0,
-    },
-}
-
-
-def _apply_memory_cap(mb: int) -> None:
-    """Cap this process's address space. Linux enforces hard; macOS ignores
-    RLIMIT_AS, so this is a no-op there (dev only) — the real cap runs in the
-    Linux worker container."""
-    if platform.system() != "Linux":
-        return
-    limit = mb * 1024 * 1024
-    try:
-        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
-        resource.setrlimit(resource.RLIMIT_AS, (limit, hard if hard > 0 else limit))
-    except (ValueError, OSError) as exc:
-        logger.warning("could not set memory cap: %s", exc)
-
-
-@worker_ready.connect
-def _start_metrics_server(**_kwargs) -> None:
-    """Expose this worker's Prometheus metrics (backtest durations) on its own
-    port. The worker is a separate process from the web app, so it cannot share
-    the web /metrics endpoint — each process is scraped independently.
-
-    Celery's prefork pool runs tasks in forked CHILDREN, so their metric writes
-    never reach this parent's in-memory registry. With PROMETHEUS_MULTIPROC_DIR
-    set (the worker container sets it), prometheus_client writes values to mmap
-    files instead and we serve a MultiProcessCollector that merges them — the
-    standard fix for prefork/gunicorn-style workers. Without the env var (bare
-    local dev), we serve the parent registry and child samples are lost; that's
-    a documented dev-only limitation, not worth a hard dependency on the dir.
-    """
-    import os
-    import time as time_mod
-
-    from prometheus_client import start_http_server
-
-    from app.core.metrics import SNAPSHOT_LAST_SUCCESS
-
-    # Seed the freshness gauge at boot: the beat loop is alive and its first
-    # tick is at most one interval away. Without this a cold stack flaps
-    # EquitySnapshotStale (gauge reads 0 -> "stale since 1970") until the
-    # first tick lands.
-    SNAPSHOT_LAST_SUCCESS.set(time_mod.time())
-    try:
-        if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
-            from prometheus_client import CollectorRegistry, multiprocess
-            registry = CollectorRegistry()
-            multiprocess.MultiProcessCollector(registry)
-            start_http_server(settings.WORKER_METRICS_PORT, registry=registry)
-        else:
-            start_http_server(settings.WORKER_METRICS_PORT)
-        logger.info("worker metrics on :%d/metrics", settings.WORKER_METRICS_PORT)
-    except OSError as exc:  # port taken (e.g. second local worker) — not fatal
-        logger.warning("worker metrics server not started: %s", exc)
-
 
 def _strategy_label(backtest_id: uuid.UUID) -> str:
     """Strategy key for the metric label; never lets a lookup failure break the
-    task. Bounded cardinality: values come from the fixed strategy registries."""
+    run. Bounded cardinality: values come from the fixed strategy registries."""
     from app.db.session import SessionLocal
     from app.models import Backtest
     try:
@@ -170,8 +31,24 @@ def _strategy_label(backtest_id: uuid.UUID) -> str:
         return "unknown"
 
 
-@celery_app.task(name="portfolio.snapshot_equity")
-def snapshot_equity_task() -> dict:
+def execute_backtest(backtest_id: uuid.UUID) -> None:
+    """Run one backtest to completion (called via BackgroundTasks). The
+    per-job memory rlimit of the old worker is intentionally NOT applied here —
+    it would cap the whole web process. Admission control (the working-set 422
+    at submit time) is the memory guard in single-process mode."""
+    strategy = _strategy_label(backtest_id)
+    start = time.perf_counter()
+    try:
+        run_and_persist(backtest_id)
+    except Exception:
+        BACKTEST_DURATION.labels(strategy, "failed").observe(time.perf_counter() - start)
+        logger.exception("backtest %s failed", backtest_id)
+        return
+    BACKTEST_DURATION.labels(strategy, "completed").observe(time.perf_counter() - start)
+
+
+# ---------------------------------------------------- periodic jobs --------
+def snapshot_equity() -> dict:
     import time as time_mod
 
     from app.core.metrics import SNAPSHOT_LAST_SUCCESS
@@ -184,20 +61,16 @@ def snapshot_equity_task() -> dict:
     return {"snapshots": n}
 
 
-@celery_app.task(name="fx.refresh")
-def refresh_fx_task() -> dict:
+def refresh_fx() -> dict:
     from app.services.fx import refresh_fx_rates
 
     return refresh_fx_rates()
 
 
-@celery_app.task(name="market.append_daily_bars", time_limit=1800,
-                 soft_time_limit=1700)
-def append_daily_bars_task() -> dict:
-    """Incremental daily-bar refresh for every active EQUITY asset: fetch the
-    last few sessions from yfinance and upsert (BarPersister-style idempotent
-    on the PK). Runs every 6h; out-of-hours runs are cheap no-ops because
-    yfinance returns already-stored sessions and the upsert skips them."""
+def append_daily_bars() -> dict:
+    """Incremental daily-bar refresh for every active equity: fetch the last few
+    sessions from yfinance and upsert (idempotent on the PK). Out-of-hours runs
+    are cheap no-ops (already-stored sessions skip)."""
     from sqlalchemy import select
 
     from app.data.backfill import backfill_yfinance
@@ -223,32 +96,16 @@ def append_daily_bars_task() -> dict:
     return {"appended": appended, "failed": failed}
 
 
-@celery_app.task(name="events.relay_outbox")
-def relay_outbox_task() -> dict:
-    from app.services.events import relay_outbox
+def relay_outbox() -> dict:
+    from app.services.events import relay_outbox as _relay
+    from app.core.metrics import OUTBOX_PENDING
 
-    out = relay_outbox()
+    out = _relay()
     if out["published"]:
         logger.warning("outbox relay re-published %d event(s) missed by a "
                        "crashed fast path", out["published"])
-    _sample_ops_gauges()   # piggyback: this beat already ticks every 10s
-    return out
-
-
-def _sample_ops_gauges() -> None:
-    """Backlog gauges: broker queue depth + unpublished outbox rows. Failure
-    to sample must never fail the relay — these are telemetry, not truth."""
-    from app.core.metrics import CELERY_QUEUE_DEPTH, OUTBOX_PENDING
-
-    try:
-        import redis as _redis
-        broker = _redis.from_url(settings.CELERY_BROKER_URL)
-        CELERY_QUEUE_DEPTH.set(broker.llen("celery"))
-    except Exception:  # noqa: BLE001
-        pass
     try:
         from sqlalchemy import func, select
-
         from app.db.session import SessionLocal
         from app.models import OutboxEvent
         with SessionLocal() as db:
@@ -257,32 +114,30 @@ def _sample_ops_gauges() -> None:
                 .where(OutboxEvent.published_at.is_(None))) or 0)
     except Exception:  # noqa: BLE001
         pass
+    return out
 
 
-@celery_app.task(name="backtest.reap_dead")
-def reap_dead_backtests_task() -> dict:
+def reap_dead_backtests() -> dict:
     from app.db.session import SessionLocal
-    from app.services.reaper import reap_dead_backtests
+    from app.services.reaper import reap_dead_backtests as _reap
 
     with SessionLocal() as db:
-        n = reap_dead_backtests(db)
+        n = _reap(db)
     if n:
         logger.warning("reaper healed %d orphaned backtest(s)", n)
     return {"reaped": n}
 
 
-@celery_app.task(name="market.poll_equity_ticks")
-def poll_equity_ticks_task() -> dict:
+def poll_equity_ticks() -> dict:
     from app.db.session import SessionLocal
-    from app.services.equity_poll import poll_equity_ticks
+    from app.services.equity_poll import poll_equity_ticks as _poll
 
     with SessionLocal() as db:
-        n = poll_equity_ticks(db)
+        n = _poll(db)
     return {"ticks": n}
 
 
-@celery_app.task(name="challenges.finish_expired")
-def finish_expired_challenges_task() -> dict:
+def finish_expired_challenges() -> dict:
     from app.db.session import SessionLocal
     from app.services.challenges import finish_expired
 
@@ -291,18 +146,3 @@ def finish_expired_challenges_task() -> dict:
     if n:
         logger.info("finished %d expired challenge(s)", n)
     return {"finished": n}
-
-
-@celery_app.task(name="backtest.run", bind=True, max_retries=0)
-def run_backtest_task(self, backtest_id: str) -> dict:
-    _apply_memory_cap(settings.BACKTEST_MEMORY_CAP_MB)
-    bt_id = uuid.UUID(backtest_id)
-    strategy = _strategy_label(bt_id)
-    start = time.perf_counter()
-    try:
-        run_and_persist(bt_id)
-    except Exception:
-        BACKTEST_DURATION.labels(strategy, "failed").observe(time.perf_counter() - start)
-        raise
-    BACKTEST_DURATION.labels(strategy, "completed").observe(time.perf_counter() - start)
-    return {"backtest_id": backtest_id, "status": "completed"}

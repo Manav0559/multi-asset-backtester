@@ -21,9 +21,9 @@ from app.core.security import create_access_token, hash_password
 from app.db.session import SessionLocal
 from app.models import LedgerEntry, Portfolio, PortfolioMember, User
 from app.models.enums import PortfolioRole
-from app.services.events import _client
 from app.services.presence import (
     PRESENCE_TTL_S,
+    _rooms,
     mark_online,
     online_members,
 )
@@ -50,9 +50,9 @@ def pres_env(client):
         db.add(PortfolioMember(portfolio_id=uuid.UUID(pid), user_id=member["id"],
                                role=PortfolioRole.TRADER))
         db.commit()
-    _client().delete(f"presence:{pid}")  # start from a clean room
+    _rooms.pop(pid, None)  # start from a clean room
     yield {"owner": owner, "member": member, "pid": pid}
-    _client().delete(f"presence:{pid}")
+    _rooms.pop(pid, None)
     with SessionLocal() as db:
         pu = uuid.UUID(pid)
         db.execute(delete(PortfolioMember).where(PortfolioMember.portfolio_id == pu))
@@ -83,18 +83,17 @@ def _wait_presence(client, pid, h, expect, tries=150):
 def test_presence_ttl_prunes_zombies():
     pid = uuid.uuid4()
     fresh, stale = uuid.uuid4(), uuid.uuid4()
-    r, key = _client(), f"presence:{pid}"
-    r.delete(key)
+    _rooms.pop(str(pid), None)
     try:
         mark_online(pid, fresh)
         # A member who crashed: last heartbeat older than the TTL window, never
         # cleanly removed. It must not linger.
-        r.zadd(key, {str(stale): time.time() - PRESENCE_TTL_S - 5})
+        _rooms[str(pid)][str(stale)] = time.time() - PRESENCE_TTL_S - 5
         online = online_members(pid)
         assert str(fresh) in online
         assert str(stale) not in online  # pruned on read
     finally:
-        r.delete(key)
+        _rooms.pop(str(pid), None)
 
 
 def test_ws_connect_marks_online_with_usernames(client, pres_env):

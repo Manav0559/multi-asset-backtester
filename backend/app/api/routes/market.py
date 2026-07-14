@@ -15,9 +15,12 @@ from app.db.session import get_db
 from app.indicators import IndicatorError, IndicatorService
 from app.models import Asset, OhlcvBar, User
 from app.models.enums import AssetClass, Timeframe
-from app.services.events import _client as _redis
 from app.services.market_hours import market_status
-from app.streaming.bus import depth_snapshot_key, tick_snapshot_key
+
+import time as time_mod
+
+# In-process timeframe-availability cache: {asset_id: (expires_epoch, [tfs])}.
+_tfavail_cache: dict[int, tuple[float, list[dict]]] = {}
 
 router = APIRouter(tags=["market"])
 
@@ -40,23 +43,53 @@ def market_status_route(asset_id: int, user: User = Depends(get_current_user),
 @router.get("/market/{asset_id}/snapshot")
 def market_snapshot(asset_id: int, user: User = Depends(get_current_user),
                     db: Session = Depends(get_db)):
-    """Last-known tick + depth from the Redis cache (instant value before the
-    first WS frame), with a provenance badge. LIVE only for crypto."""
+    """Latest price + book, fetched on demand. Crypto: a single Binance REST
+    call (near-real-time, no 24/7 daemon). Equity: the latest stored close,
+    badged DELAYED / LAST SESSION. Never a fabricated feed."""
     a = _asset_or_404(db, asset_id)
-    r = _redis()
-    tick_raw = r.get(tick_snapshot_key(a.exchange, a.symbol))
-    depth_raw = r.get(depth_snapshot_key(a.exchange, a.symbol))
     status = market_status(a.exchange, a.asset_class)
-    live = a.asset_class == AssetClass.CRYPTO
+    tick, depth, provenance = None, None, status["provenance"]
+
+    if a.asset_class == AssetClass.CRYPTO:
+        tick, depth = _binance_snapshot(a.symbol)
+        provenance = "delayed"   # on-demand fetch, not a streaming feed
+    else:
+        last = db.execute(
+            select(OhlcvBar.close, OhlcvBar.time)
+            .where(OhlcvBar.asset_id == a.id)
+            .order_by(OhlcvBar.time.desc()).limit(1)
+        ).first()
+        if last:
+            tick = {"price": str(last.close), "ts": last.time.isoformat()}
+
     return {
         "asset_id": a.id, "symbol": a.symbol, "exchange": a.exchange,
-        "tick": json.loads(tick_raw) if tick_raw else None,
-        "depth": json.loads(depth_raw) if depth_raw else None,
-        "provenance": "live" if live else status["provenance"],
+        "tick": tick, "depth": depth, "provenance": provenance,
         "channels": {"tick": f"tick:{a.exchange}:{a.symbol}",
                      "depth": f"depth:{a.exchange}:{a.symbol}"},
         "status": status,
     }
+
+
+def _binance_snapshot(symbol: str) -> tuple[dict | None, dict | None]:
+    """One-shot price + top-of-book from Binance REST. Returns (tick, depth) or
+    (None, None) on any failure — the caller degrades to no live value."""
+    import httpx
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        with httpx.Client(timeout=4.0) as c:
+            px = c.get("https://api.binance.com/api/v3/ticker/price",
+                       params={"symbol": symbol}).json()
+            book = c.get("https://api.binance.com/api/v3/depth",
+                         params={"symbol": symbol, "limit": 20}).json()
+        tick = {"price": px["price"], "ts": now}
+        depth = {"bids": book.get("bids", []), "asks": book.get("asks", []),
+                 "is_live": True, "ts": now}
+        return tick, depth
+    except Exception:  # noqa: BLE001 — no live value beats a wrong one
+        return None, None
 
 
 @router.get("/market/{asset_id}/volume-profile")
@@ -114,15 +147,14 @@ def asset_timeframes(ids: str, user: User = Depends(get_current_user),
         raise HTTPException(status_code=422, detail="ids must be ints")
     if not asset_ids:
         return {}
-    # Counting over compressed chunks costs ~250ms/asset — cache per asset
-    # (bars append slowly; staleness of an hour is invisible in a picker).
-    r = _redis()
+    # Cache per asset in process (bars append slowly; an hour of staleness is
+    # invisible in a picker) to avoid re-counting on every dropdown open.
     out: dict[int, list[dict]] = {}
     missing = []
     for a in asset_ids:
-        cached = r.get(f"tfavail:{a}")
-        if cached is not None:
-            out[a] = json.loads(cached)
+        cached = _tfavail_cache.get(a)
+        if cached is not None and cached[0] > time_mod.time():
+            out[a] = cached[1]
         else:
             missing.append(a)
     if not missing:
@@ -140,7 +172,7 @@ def asset_timeframes(ids: str, user: User = Depends(get_current_user),
             fresh[aid].append({"timeframe": tf.value, "bars": n})
     for a, tfs in fresh.items():
         tfs.sort(key=lambda x: order.get(x["timeframe"], 9))
-        r.set(f"tfavail:{a}", json.dumps(tfs), ex=3600)
+        _tfavail_cache[a] = (time_mod.time() + 3600, tfs)
         out[a] = tfs
     return out
 

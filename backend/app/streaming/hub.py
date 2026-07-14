@@ -42,13 +42,11 @@ from collections import defaultdict, deque
 from fastapi import WebSocket
 
 from app.core.metrics import WS_CLIENTS, WS_CONFLATED, WS_OVERFLOW_DISCONNECTS
-from app.streaming.bus import TickBus
 
 logger = logging.getLogger("streaming.hub")
 
 _PUBLIC_PREFIXES = ("tick:", "bar:", "depth:")
 _PORTFOLIO_PREFIX = "portfolio:"
-_HUB_PATTERNS = ("tick:*", "bar:*", "depth:*", "portfolio:*")
 # Only the latest value per conflatable channel matters; a slow client drops
 # intermediate ones. Everything else (portfolio:) is must-deliver.
 # "_hb" is the hub's own heartbeat pseudo-channel — always conflatable (a slow
@@ -116,24 +114,21 @@ class _Sender:
 
 
 class ConnectionManager:
-    def __init__(self, bus: TickBus | None = None):
-        self.bus = bus or TickBus()
+    def __init__(self) -> None:
         self._subscribers: dict[str, set[WebSocket]] = defaultdict(set)
         self._conn_channels: dict[WebSocket, set[str]] = defaultdict(set)
         self._senders: dict[WebSocket, _Sender] = {}
         self._sender_tasks: dict[WebSocket, asyncio.Task] = {}
-        self._pubsub = None
-        self._reader_task: asyncio.Task | None = None
         self._hb_task: asyncio.Task | None = None
         self.epoch: str = ""   # set at start(); new per hub incarnation
         self._lock = asyncio.Lock()
 
     # ---- lifecycle --------------------------------------------------------
     async def start(self) -> None:
-        await self.bus.connect()
-        self._pubsub = self.bus.redis.pubsub()
-        await self._pubsub.psubscribe(*_HUB_PATTERNS)
-        self._reader_task = asyncio.create_task(self._reader_loop(), name="hub-reader")
+        # Bind the in-process bus so publishers (order execution, chat, presence)
+        # reach this hub with no external broker.
+        from app.streaming.inproc_bus import bus
+        bus.bind(asyncio.get_running_loop(), self._deliver)
         # Epoch identifies THIS hub incarnation. A client that sees the epoch
         # change knows the hub restarted while its socket auto-reconnected —
         # anything it "knew" may be stale, so it must resync over REST. The
@@ -141,20 +136,17 @@ class ConnectionManager:
         # is dead even if TCP hasn't noticed yet).
         self.epoch = uuid.uuid4().hex
         self._hb_task = asyncio.create_task(self._heartbeat_loop(), name="hub-hb")
-        logger.info("connection manager started (patterns=%s, epoch=%s)",
-                    _HUB_PATTERNS, self.epoch)
+        logger.info("connection manager started (in-process bus, epoch=%s)", self.epoch)
 
     async def stop(self) -> None:
-        for task in (self._reader_task, self._hb_task):
-            if task:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        if self._pubsub:
-            await self._pubsub.aclose()
-        await self.bus.close()
+        from app.streaming.inproc_bus import bus
+        bus.unbind()
+        if self._hb_task:
+            self._hb_task.cancel()
+            try:
+                await self._hb_task
+            except asyncio.CancelledError:
+                pass
 
     async def _heartbeat_loop(self) -> None:
         from app.core.config import settings
@@ -223,26 +215,20 @@ class ConnectionManager:
             return channel in allowed
         return False
 
-    # ---- Redis -> browser relay -------------------------------------------
-    async def _reader_loop(self) -> None:
-        assert self._pubsub is not None
-        async for message in self._pubsub.listen():
-            if message["type"] != "pmessage":
+    # ---- in-process bus -> browser relay ----------------------------------
+    def _deliver(self, channel: str, data: dict) -> None:
+        """Called on the event loop by the in-process bus for every published
+        message. Fan out to sockets subscribed to `channel` (exact match — the
+        old Redis pattern layer is unnecessary in one process)."""
+        targets = self._subscribers.get(channel)
+        if not targets:
+            return
+        frame = json.dumps({"type": "message", "channel": channel, "data": data})
+        for ws in list(targets):
+            sender = self._senders.get(ws)
+            if sender is None or sender.closed:
                 continue
-            channel = message["channel"]
-            targets = list(self._subscribers.get(channel, ()))
-            if not targets:
-                continue
-            frame = json.dumps({
-                "type": "message",
-                "channel": channel,
-                "data": json.loads(message["data"]),
-            })
-            for ws in targets:
-                sender = self._senders.get(ws)
-                if sender is None or sender.closed:
-                    continue
-                sender.offer(channel, frame)   # never blocks on the socket
+            sender.offer(channel, frame)   # never blocks on the socket
 
 
 manager = ConnectionManager()
