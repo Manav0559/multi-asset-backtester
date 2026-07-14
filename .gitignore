@@ -26,8 +26,9 @@ node_modules/
 .pytest_cache/
 *.log
 
-# Local Claude Code tool state (machine-specific)
+# Local tooling / editor state
 .claude/
+.cursor/
 
 # macOS Finder "keep both" duplicates
 * 2.*

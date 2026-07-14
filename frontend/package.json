@@ -28,5 +28,8 @@
     "postcss": "8.4.39",
     "tailwindcss": "3.4.6",
     "typescript": "5.5.3"
-  }
+  },
+  "author": "Manav Singla",
+  "description": "Multi-asset backtesting and multiplayer paper-trading platform.",
+  "license": "MIT"
 }

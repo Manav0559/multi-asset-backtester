@@ -1,6 +1,6 @@
 """BaseStrategy — the ONE strategy contract every algorithm implements.
 
-The signal contract (fixed platform-wide, see CLAUDE.md): a strategy outputs
+The signal contract (fixed platform-wide): a strategy outputs
 TARGET WEIGHTS per asset per bar. `>0` long, `<0` short, `sum(|w|)` = gross
 leverage, `sum(w)` = net exposure.
 
