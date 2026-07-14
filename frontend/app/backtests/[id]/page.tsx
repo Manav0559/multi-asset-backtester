@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import {
   Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import Guard from "@/components/Guard";
 import { api } from "@/lib/api";
 import { ccySymbol } from "@/lib/format";
+import { useToast } from "@/components/ToastProvider";
 
 type Backtest = {
   id: string; status: string; config: any; error: string | null;
@@ -39,6 +40,17 @@ function BacktestDetail() {
   const { id } = useParams<{ id: string }>();
   const [bt, setBt] = useState<Backtest | null>(null);
   const [yearly, setYearly] = useState<Yearly[]>([]);
+  const router = useRouter();
+  const toast = useToast();
+
+  async function deleteRun() {
+    if (!window.confirm("Delete this backtest result? This cannot be undone.")) return;
+    try {
+      await api(`/backtests/${id}`, { method: "DELETE" });
+      toast.success("Backtest deleted");
+      router.push("/backtests");
+    } catch (e: any) { toast.error(e.message); }
+  }
 
   useEffect(() => {
     function load() {
@@ -69,13 +81,20 @@ function BacktestDetail() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">
-          {bt.config?.strategy} · {bt.config?.timeframe}
-        </h1>
-        <p className="text-sm text-muted">
-          Backtest {bt.id.slice(0, 8)} — status: <span className="text-slate-200">{bt.status}</span>
-        </p>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-xl font-semibold">
+            {bt.config?.label ?? bt.config?.strategy} · {bt.config?.timeframe}
+          </h1>
+          <p className="text-sm text-muted">
+            {bt.config?.label ? `${bt.config?.strategy} · ` : ""}Backtest {bt.id.slice(0, 8)} — status:{" "}
+            <span className="text-slate-200">{bt.status}</span>
+          </p>
+        </div>
+        <button onClick={deleteRun}
+          className="btn-ghost border border-down/40 text-down text-sm active:scale-95">
+          Delete result
+        </button>
       </div>
 
       {bt.error && <div className="card p-4 border-down text-down text-sm">{bt.error}</div>}

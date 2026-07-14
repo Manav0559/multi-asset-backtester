@@ -7,7 +7,7 @@ import math
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -100,6 +100,49 @@ def list_assets(user: User = Depends(get_current_user), db: Session = Depends(ge
     rows = db.scalars(select(Asset).where(Asset.is_active).order_by(Asset.symbol)).all()
     return [{"id": a.id, "symbol": a.symbol, "exchange": a.exchange,
              "asset_class": a.asset_class.value, "currency": a.currency} for a in rows]
+
+
+@router.get("/assets/timeframes")
+def asset_timeframes(ids: str, user: User = Depends(get_current_user),
+                     db: Session = Depends(get_db)) -> dict:
+    """Which timeframes actually have data, per asset — the UI only offers
+    those (most equities are 1d-only; intraday history exists for crypto and
+    a megacap core). One grouped, chunk-pruned count; capped id list."""
+    try:
+        asset_ids = [int(x) for x in ids.split(",") if x.strip()][:60]
+    except ValueError:
+        raise HTTPException(status_code=422, detail="ids must be ints")
+    if not asset_ids:
+        return {}
+    # Counting over compressed chunks costs ~250ms/asset — cache per asset
+    # (bars append slowly; staleness of an hour is invisible in a picker).
+    r = _redis()
+    out: dict[int, list[dict]] = {}
+    missing = []
+    for a in asset_ids:
+        cached = r.get(f"tfavail:{a}")
+        if cached is not None:
+            out[a] = json.loads(cached)
+        else:
+            missing.append(a)
+    if not missing:
+        return out
+    asset_ids = missing
+    rows = db.execute(
+        select(OhlcvBar.asset_id, OhlcvBar.timeframe, func.count())
+        .where(OhlcvBar.asset_id.in_(asset_ids))
+        .group_by(OhlcvBar.asset_id, OhlcvBar.timeframe)
+    ).all()
+    fresh: dict[int, list[dict]] = {a: [] for a in asset_ids}
+    order = {"1m": 0, "5m": 1, "15m": 2, "1h": 3, "1d": 4}
+    for aid, tf, n in rows:
+        if n >= 30:  # fewer bars than any indicator warm-up is not chartable
+            fresh[aid].append({"timeframe": tf.value, "bars": n})
+    for a, tfs in fresh.items():
+        tfs.sort(key=lambda x: order.get(x["timeframe"], 9))
+        r.set(f"tfavail:{a}", json.dumps(tfs), ex=3600)
+        out[a] = tfs
+    return out
 
 
 def _load_bar_frame(db: Session, asset_id: int, tf: Timeframe, limit: int):

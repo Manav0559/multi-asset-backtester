@@ -10,6 +10,7 @@ import Link from "next/link";
 import useSWR from "swr";
 import Guard from "@/components/Guard";
 import StrategyPicker, { MlHonestyNote, StrategyEntry, categoryBadge } from "@/components/StrategyPicker";
+import AssetPicker from "@/components/AssetPicker";
 import { EmptyState } from "@/components/ui";
 import { useToast } from "@/components/ToastProvider";
 import { api, fetcher } from "@/lib/api";
@@ -44,6 +45,7 @@ function BacktestsInner() {
   const [params, setParams] = useState<Record<string, number | string>>({});
   const [code, setCode] = useState("");
   const [codeName, setCodeName] = useState("My strategy");
+  const [runName, setRunName] = useState("");
   const [validation, setValidation] = useState<{ ok: boolean; errors: string[] } | null>(null);
   const [borrowBps, setBorrowBps] = useState(50);
   const [maxLeverage, setMaxLeverage] = useState(2);
@@ -63,6 +65,29 @@ function BacktestsInner() {
   const strat = strategies.find((s) => s.key === strategy);
   const isMulti = strat?.kind === "portfolio";
   const isCustom = strategy === "custom_code";
+
+  // Timeframes are gated by what the selected asset(s) actually have bars
+  // for; a basket offers the INTERSECTION of its members' timeframes.
+  const relevantIds = useMemo(() => {
+    const ids = (strat?.kind === "portfolio" ? assetIds : (assetId != null ? [assetId] : []));
+    return ids.slice(0, 60);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assetId, assetIds.join(","), strat?.kind]);
+  const { data: tfAvail } = useSWR<Record<string, { timeframe: string }[]>>(
+    relevantIds.length ? `/assets/timeframes?ids=${relevantIds.join(",")}` : null,
+    fetcher, { revalidateOnFocus: false });
+  const availableTfs = useMemo(() => {
+    if (!tfAvail || !relevantIds.length) return null;
+    const lists = relevantIds.map((id) => (tfAvail[String(id)] ?? []).map((t) => t.timeframe));
+    if (lists.some((l) => !l.length)) return ["1d"];
+    return ["1m", "5m", "15m", "1h", "1d"].filter((tf) => lists.every((l) => l.includes(tf)));
+  }, [tfAvail, relevantIds]);
+  useEffect(() => {
+    if (availableTfs && availableTfs.length && !availableTfs.includes(timeframe)) {
+      setTimeframe(availableTfs[availableTfs.length - 1]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableTfs?.join(",")]);
 
   function load() {
     api<Backtest[]>("/backtests").then(setList).catch(() => {});
@@ -115,6 +140,15 @@ function BacktestsInner() {
     return res.ok;
   }
 
+  async function deleteBacktest(id: string) {
+    if (!window.confirm("Delete this backtest result? This cannot be undone.")) return;
+    try {
+      await api(`/backtests/${id}`, { method: "DELETE" });
+      setList((l) => l.filter((b) => b.id !== id));
+      toast.success("Backtest deleted");
+    } catch (err: any) { toast.error(err.message); }
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitError("");
@@ -135,6 +169,7 @@ function BacktestsInner() {
       const payload: Record<string, unknown> = {
         strategy_version_id: sv.version_id,
         timeframe, strategy, params,
+        name: runName.trim() || undefined,
         initial_capital: 100000, commission_bps: 5, n_trials: 20,
       };
       if (isCustom) payload.code = code;
@@ -198,18 +233,24 @@ function BacktestsInner() {
 
           {!isMulti && (
             <div className="w-52">
-              <label className="label">Asset ({marketAssets.length} in {MARKETS.find((m) => m.key === market)!.label})</label>
-              <select className="input" value={assetId ?? ""} onChange={(e) => setAssetId(Number(e.target.value))}>
-                {marketAssets.map((a) => <option key={a.id} value={a.id}>{a.symbol}</option>)}
-              </select>
+              <label className="label">Asset (type to search)</label>
+              <AssetPicker assets={marketAssets} value={assetId} onChange={setAssetId} />
             </div>
           )}
 
           <div className="w-36">
             <label className="label">Timeframe</label>
             <select className="input" value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
-              {TIMEFRAMES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              {TIMEFRAMES.filter((t) => !availableTfs || availableTfs.includes(t.value))
+                .map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
+          </div>
+
+          <div className="w-44">
+            <label className="label">Run name (optional)</label>
+            <input className="input" value={runName} maxLength={120}
+              placeholder="e.g. AAPL golden cross"
+              onChange={(e) => setRunName(e.target.value)} />
           </div>
 
           {isMulti && (
@@ -419,8 +460,11 @@ function BacktestsInner() {
                 <td className="p-3 text-right">{fmt(b.sharpe)}</td>
                 <td className="p-3 text-right text-accent">{fmt(b.deflated_sharpe)}</td>
                 <td className="p-3 text-right text-down">{fmt(b.max_drawdown_pct, "%")}</td>
-                <td className="p-3 text-right">
+                <td className="p-3 text-right whitespace-nowrap">
                   <Link href={`/backtests/${b.id}`} className="text-accent hover:underline">View →</Link>
+                  <button onClick={() => deleteBacktest(b.id)}
+                    title="Delete result" aria-label="Delete backtest"
+                    className="ml-3 text-muted hover:text-down transition-colors">✕</button>
                 </td>
               </tr>
             ))}

@@ -195,12 +195,18 @@ function CompeteInner() {
             {(portfolios ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </div>
-        <div className="w-32">
-          <label className="label">Duration</label>
-          <select className="input" value={days} onChange={(e) => setDays(Number(e.target.value))}>
-            <option value={7}>1 week</option><option value={14}>2 weeks</option>
-            <option value={30}>1 month</option>
-          </select>
+        <div className="w-40">
+          <label className="label">Duration (days)</label>
+          <div className="flex gap-2">
+            <input type="number" min={1} max={365} className="input" value={days}
+              onChange={(e) => setDays(Math.max(1, Math.min(365, Number(e.target.value) || 1)))} />
+            <select className="input !w-24" value=""
+              onChange={(e) => e.target.value && setDays(Number(e.target.value))}>
+              <option value="">quick</option>
+              <option value={1}>1d</option><option value={7}>1w</option>
+              <option value={14}>2w</option><option value={30}>1mo</option>
+            </select>
+          </div>
         </div>
         <button className="btn-primary" disabled={busy || !myPf}>Send challenge</button>
       </form>

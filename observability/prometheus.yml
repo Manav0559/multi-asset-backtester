@@ -1,6 +1,6 @@
 # Scrape config for the compose --profile app stack. Each process is scraped
 # independently (standard multi-process pattern — no pushgateway):
-#   backend :8000/metrics — HTTP rate/latency by route template + leaderboard query time
+#   backend :8000/metrics — HTTP rate/latency by route template
 #   worker  :9200/metrics — backtest durations (multiprocess-merged, see tasks.py)
 global:
   scrape_interval: 10s
