@@ -4,12 +4,12 @@
 ![Python 3.13](https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?logo=typescript&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-![Tests](https://img.shields.io/badge/tests-91%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-194%20passing-brightgreen)
 
 Write strategies (or bring your own Python), backtest them on real historical
 prices with honest statistics, paper-trade live prices inside **shared**
-portfolios, and compete on time-windowed leaderboards — with production-grade
-observability bolted on, not bolted after.
+portfolios, and run consent-based head-to-head competitions — with
+production-grade observability bolted on, not bolted after.
 
 The design goal is **honesty about performance**: every backtest reports a
 Deflated Sharpe next to the raw Sharpe, ML strategies are walk-forward and
@@ -24,12 +24,9 @@ wouldn't have had.
 
 | | |
 | --- | --- |
-| ![Windowed leaderboard](screenshots/04-leaderboard.png) | ![Consent-based head-to-head competition](screenshots/06-compete.png) |
-
-| | |
-| --- | --- |
-| ![Live Binance order book and trade tape](screenshots/07-orderbook.png) | ![Categorized searchable strategy picker](screenshots/08-picker.png) |
-| ![Inline ML honesty warning](screenshots/09-ml-honesty.png) | ![Team chat with presence avatars and typing](screenshots/10-chat-presence.png) |
+| ![Consent-based head-to-head competition](screenshots/06-compete.png) | ![Live Binance order book and trade tape](screenshots/07-orderbook.png) |
+| ![Categorized searchable strategy picker](screenshots/08-picker.png) | ![Inline ML honesty warning](screenshots/09-ml-honesty.png) |
+| ![Team chat with presence avatars and typing](screenshots/10-chat-presence.png) | |
 
 > Screenshots are generated, not hand-taken: `./scripts/demo.sh` then
 > `cd frontend && node scripts/capture-screenshots.mjs` re-captures all of them
@@ -51,7 +48,7 @@ actual Celery worker. When it prints `✔ demo ready`:
 
 | What | Where | Login |
 | --- | --- | --- |
-| App | http://localhost:3000 | `alice@demo.backtester.dev` / `demo-pass-123` |
+| App | http://localhost:3005 | `alice@demo.backtester.dev` / `demo-pass-123` |
 | Grafana | http://localhost:3001/d/backtester-main | `admin` / `admin` |
 | Prometheus | http://localhost:9090/alerts | — |
 
@@ -107,9 +104,9 @@ test fails loudly if a field is ever added). Results freeze at the end of the
 window and stay immutable as portfolios keep trading.
 
 **Plus the platform underneath:** multiplayer portfolios sharing ONE cash
-balance (row-locked, idempotent fills, WebSocket-synced), time-windowed
-leaderboards (24h / 7d / all) from periodic equity snapshots in a single SQL
-statement, a crash-safe job system (reaper heals hard-killed backtests), and a
+balance (row-locked, idempotent fills, WebSocket-synced), periodic equity
+snapshots (single SQL statement) that back the head-to-head competition
+windows, a crash-safe job system (reaper heals hard-killed backtests), and a
 provisioned Prometheus + Grafana observability stack with alerting.
 
 ---
@@ -157,7 +154,7 @@ uvicorn app.main:app --port 8000
 # second shell — worker + beat (equity snapshots):
 celery -A app.backtest.tasks:celery_app worker -B --loglevel=info
 
-cd ../frontend && npm install && npm run dev    # http://localhost:3000
+cd ../frontend && npm install && npm run dev    # http://localhost:3005
 ```
 
 Full stack instead: `docker compose --profile app up -d --build` (a one-shot
@@ -199,7 +196,7 @@ global banner appears the moment the live link drops (auto-reconnects).
 | Equity price during market hours | yfinance poll (beat task, exchange-calendar-aware) | vendor-delayed ~15 min | `DELAYED ~15m` |
 | Equity price outside market hours | last stored session close | prior session | `LAST SESSION` |
 | Equity "depth" | volume-at-price profile reconstructed from stored bars | prior session | `LAST SESSION` |
-| Portfolio equity curves, leaderboard, compete | ledger replay, positions marked at stored closes | as-of last close | `MARKED AT LAST CLOSE` |
+| Portfolio equity curves, competitions | ledger replay, positions marked at stored closes | as-of last close | `MARKED AT LAST CLOSE` |
 | Historical bars (charts, backtests) | yfinance (equities: 5y 1d + tiered intraday) · Binance REST (crypto: 1d/1h/15m/1m) | static backfill | — |
 
 Crypto is the **only** live surface; there is no fake equity order book and no
@@ -224,8 +221,8 @@ credentials exist — env-gated, and clearly SIMULATED-badged otherwise.)
   price between trades** (latest close only for the terminal point). That's an
   approximation — a position's value between trades doesn't tick with the
   market — chosen so the curve is O(ledger entries) with ONE batched query,
-  which lets the leaderboard sparkline N portfolios without N+1 price scans.
-- **Windowed leaderboards read periodic snapshots, not full replays.** A
+  which lets competition curves replay N portfolios without N+1 price scans.
+- **Competition windows read periodic snapshots, not full replays.** A
   5-minute beat writes `portfolio_equity_snapshots` in one atomic
   `INSERT … FROM SELECT` (the read-then-insert version raced portfolio
   deletion — found live, fixed by construction). Window baselines are then a
@@ -242,7 +239,7 @@ credentials exist — env-gated, and clearly SIMULATED-badged otherwise.)
 - **Rate limiter fails open.** If Redis is down, requests pass unmetered —
   availability over strictness for a trading *simulator*. The CHECK constraint
   on cash is the invariant that must never fail open, and it's in Postgres.
-- **`is_public` is opt-in at creation** — competing on the leaderboard is a
+- **`is_public` is opt-in at creation** — sharing a portfolio's results is a
   choice, not a default.
 
 ---
@@ -259,7 +256,6 @@ credentials exist — env-gated, and clearly SIMULATED-badged otherwise.)
 | `POST` | `/backtests` | submit (built-in or `custom_code` + `code`) → Celery |
 | `GET` | `/backtests/{id}` · `/backtests/{id}/yearly` | results, diagnostics, yearly slices |
 | `POST` | `/portfolios` · `/portfolios/{id}/orders` | shared portfolios, locked-ledger fills |
-| `GET` | `/leaderboard?window=24h\|7d\|all` | windowed public rankings |
 | `GET` | `/portfolios/{id}/equity-history` | ledger-replayed equity curve |
 | `WS` | `/ws` | live price + portfolio event fan-out |
 | `GET` | `/metrics` | Prometheus exposition |

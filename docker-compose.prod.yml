@@ -20,7 +20,7 @@
 #
 # NOT here (deliberate): TLS/domain termination (belongs to the host's proxy),
 # secrets (env_file per deployment), backups (Tier B: nightly pg_dump + WAL
-# archiving + a TESTED restore drill — see HANDOFF roadmap).
+# archiving + a TESTED restore drill — see README).
 
 networks:
   edge: {}

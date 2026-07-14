@@ -26,6 +26,8 @@ node_modules/
 .pytest_cache/
 *.log
 
+# Local tooling / editor state
+.cursor/
 
 # macOS Finder "keep both" duplicates
 * 2.*
