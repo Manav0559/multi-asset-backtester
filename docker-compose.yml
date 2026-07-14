@@ -30,19 +30,6 @@ services:
       timeout: 5s
       retries: 10
 
-  redis:
-    image: redis:7-alpine
-    container_name: backtester-redis
-    ports:
-      - "6380:6379"
-    volumes:
-      - backtester_redisdata:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   # One-shot: bring the schema to head, then exit 0. Everything app-tier waits on
   # its successful completion so no service races an unmigrated DB.
   migrate:
@@ -65,9 +52,6 @@ services:
     image: backtester-backend
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/backtester
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
       # Override in a real deployment — this is a dev default only.
       JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-in-production-0123456789}
     ports:
@@ -76,8 +60,6 @@ services:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
       db:
-        condition: service_healthy
-      redis:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
@@ -88,64 +70,6 @@ services:
       retries: 5
       start_period: 15s
 
-  worker:
-    profiles: ["app"]
-    build:
-      context: ./backend
-    image: backtester-backend
-    # -B embeds the beat scheduler (periodic equity snapshots for the windowed
-    # leaderboard) — safe with a single worker replica.
-    command: ["celery", "-A", "app.backtest.tasks:celery_app", "worker", "-B",
-              "--loglevel=info", "--concurrency=2"]
-    environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/backtester
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
-      # Prefork children write metric values to mmap files here; the parent's
-      # exposition endpoint merges them (see tasks._start_metrics_server).
-      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
-      # Pin BLAS/OpenMP to one thread per prefork child: numpy/sklearn/xgboost
-      # each spin their own pool, and 2 children x N-thread pools oversubscribes
-      # the CPU quota into pure context-switch churn.
-      OMP_NUM_THREADS: "1"
-      OPENBLAS_NUM_THREADS: "1"
-      MKL_NUM_THREADS: "1"
-      VECLIB_MAXIMUM_THREADS: "1" 
-    ports:
-      # Worker's own Prometheus exposition (separate process from the web app).
-      - "${WORKER_METRICS_PORT:-9200}:9200"
-    depends_on:
-      redis:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD-SHELL",
-             "celery -A app.backtest.tasks:celery_app inspect ping -t 5 || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
-
-  # Live market-data ingest: subscribes to Binance WS (trades + L2 depth) for
-  # the crypto universe and fans out onto Redis (tick:/depth:) for the hub.
-  # The ONLY live feed; equities use the beat-driven delayed poll in the worker.
-  ticker:
-    profiles: ["app"]
-    build:
-      context: ./backend
-    image: backtester-backend
-    command: ["python", "-m", "app.streaming.supervisor"]
-    environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/backtester
-      REDIS_URL: redis://redis:6379/0
-    depends_on:
-      redis:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    restart: unless-stopped
 
   frontend:
     profiles: ["app"]
@@ -224,6 +148,5 @@ services:
 
 volumes:
   backtester_pgdata:
-  backtester_redisdata:
   backtester_promdata:
   backtester_grafanadata:

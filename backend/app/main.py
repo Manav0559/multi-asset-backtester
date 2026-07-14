@@ -31,8 +31,10 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start the WS hub's Redis subscription bridge on boot, tear down on exit.
+    # Start the WS hub (in-process bus) + the periodic-job scheduler on boot.
+    from app.scheduler import scheduler
     await manager.start()
+    scheduler.start()
 
     # Warm the exchange calendars off the event loop: building an
     # exchange_calendars calendar is seconds of CPU, and doing it lazily made
@@ -49,6 +51,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await scheduler.stop()
         await manager.stop()
 
 
@@ -66,7 +69,6 @@ app.add_middleware(
 if settings.RATE_LIMIT_ENABLED:
     app.add_middleware(
         RateLimitMiddleware,
-        redis_url=settings.REDIS_URL,
         limit=settings.RATE_LIMIT_PER_MINUTE,
         window_seconds=60,
     )

@@ -69,7 +69,20 @@ def _rebuild(hypertable_sql: str) -> None:
     op.execute("SELECT add_compression_policy('ohlcv_bars', INTERVAL '7 days')")
 
 
+def _is_hypertable(bind) -> bool:
+    """Only true on Timescale where 0001 built the hypertable. On vanilla
+    Postgres this whole re-chunk migration is a no-op (nothing to re-chunk)."""
+    if not bind.exec_driver_sql(
+            "SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'").first():
+        return False
+    return bool(bind.exec_driver_sql(
+        "SELECT 1 FROM timescaledb_information.hypertables "
+        "WHERE hypertable_name = 'ohlcv_bars'").first())
+
+
 def upgrade() -> None:
+    if not _is_hypertable(op.get_bind()):
+        return  # vanilla Postgres: ohlcv_bars is a plain table, nothing to do
     _rebuild(
         """
         SELECT create_hypertable(
@@ -82,6 +95,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if not _is_hypertable(op.get_bind()):
+        return
     _rebuild(
         """
         SELECT create_hypertable(

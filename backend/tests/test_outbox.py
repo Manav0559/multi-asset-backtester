@@ -23,7 +23,7 @@ from app.models import (
     PortfolioMember, Position, Trade, User,
 )
 from app.models.enums import AssetClass, Timeframe
-from app.services.events import _client, relay_outbox
+from app.services.events import relay_outbox
 
 _PW = hash_password("s3cret-pass!")
 
@@ -92,9 +92,9 @@ def test_reject_does_not_write_outbox(client, ob_env):
     assert _outbox_rows(ob_env["pid"]) == []      # ephemeral: fast-path only
 
 
-def test_relay_republishes_row_orphaned_by_crash(client, ob_env):
+def test_relay_republishes_row_orphaned_by_crash(client, ob_env, monkeypatch):
     """Simulate the crash window: an outbox row committed but never published.
-    The relay must emit it onto the REAL Redis channel and mark it."""
+    The relay must re-emit it onto the in-process bus and mark it."""
     chan = f"portfolio:{ob_env['pid']}"
     payload = {"type": "order", "status": "filled", "order_id": str(uuid.uuid4()),
                "portfolio_id": ob_env["pid"], "version": 99}
@@ -102,19 +102,15 @@ def test_relay_republishes_row_orphaned_by_crash(client, ob_env):
         db.add(OutboxEvent(channel=chan, payload=payload))
         db.commit()
 
-    pubsub = _client().pubsub()
-    pubsub.subscribe(chan)
-    assert pubsub.get_message(timeout=2)["type"] == "subscribe"
+    # Capture what the relay publishes on the in-process bus.
+    published: list[tuple[str, dict]] = []
+    import app.services.events as events_mod
+    monkeypatch.setattr(events_mod.bus, "publish",
+                        lambda c, d: published.append((c, d)))
 
     out = relay_outbox()
     assert out["published"] >= 1
-
-    msg = pubsub.get_message(timeout=3)
-    while msg is not None and msg["type"] != "message":
-        msg = pubsub.get_message(timeout=3)
-    assert msg is not None, "relay published nothing to the channel"
-    assert json.loads(msg["data"]) == payload      # byte-identical replay
-    pubsub.close()
+    assert (chan, payload) in published      # byte-identical replay
 
     rows = _outbox_rows(ob_env["pid"])
     assert all(r.published_at is not None for r in rows)

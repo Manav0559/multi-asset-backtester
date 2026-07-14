@@ -73,14 +73,12 @@ def test_ws_and_pool_fabric_metrics_exposed(client):
             db.commit()
 
 
-def test_backlog_gauges_sampled(client):
-    """The relay's piggybacked sampler sets queue-depth + outbox-pending."""
+def test_outbox_pending_gauge_sampled(client):
+    """The relay job sets the outbox-pending backlog gauge."""
     from prometheus_client import REGISTRY
 
-    from app.backtest.tasks import _sample_ops_gauges
+    from app.backtest.tasks import relay_outbox
 
-    _sample_ops_gauges()
-    q = REGISTRY.get_sample_value("celery_queue_depth")
+    relay_outbox()
     p = REGISTRY.get_sample_value("outbox_pending_events")
-    assert q is not None and q >= 0
     assert p is not None and p >= 0

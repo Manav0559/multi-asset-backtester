@@ -7,7 +7,7 @@ backtest config selects the engine strategy.
 """
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.orm import Session
 
@@ -138,7 +138,8 @@ def _estimate_working_set_mb(db: Session, body: BacktestCreate) -> int:
 
 
 @router.post("/backtests", response_model=BacktestOut, status_code=status.HTTP_202_ACCEPTED)
-def submit_backtest(body: BacktestCreate, user: User = Depends(get_current_user),
+def submit_backtest(body: BacktestCreate, background: BackgroundTasks,
+                    user: User = Depends(get_current_user),
                     db: Session = Depends(get_db)) -> Backtest:
     # Ownership check: the strategy version must belong to this user.
     sv = db.get(StrategyVersion, body.strategy_version_id)
@@ -195,10 +196,9 @@ def submit_backtest(body: BacktestCreate, user: User = Depends(get_current_user)
     db.commit()
     db.refresh(bt)
 
-    # Dispatch to the Celery worker (import here to avoid loading Celery on
-    # every request path / in the web process import graph).
-    from app.backtest.tasks import run_backtest_task
-    run_backtest_task.delay(str(bt.id))
+    # Run in-process after the response is sent (single-process free tier).
+    from app.backtest.tasks import execute_backtest
+    background.add_task(execute_backtest, bt.id)
     return bt
 
 

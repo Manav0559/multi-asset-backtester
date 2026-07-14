@@ -59,16 +59,6 @@ groups:
             No successful snapshot beat tick for 15+ minutes — windowed
             leaderboards are drifting. Check the worker (-B) container.
 
-      - alert: CeleryQueueBacklog
-        # Sampled by the 10s relay beat. Sustained depth means the worker pool
-        # can't keep up (or died with beat still queueing).
-        expr: max(celery_queue_depth) > 20
-        for: 10m
-        labels:
-          severity: warn
-        annotations:
-          summary: "Celery queue backlog is growing"
-          description: "{{ $value }} tasks waiting for 10m+ — check worker health/capacity."
 
       - alert: OutboxRelayStuck
         # The relay drains pending rows every 10s. Rows pending for 5 minutes

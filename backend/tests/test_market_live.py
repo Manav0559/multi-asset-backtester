@@ -72,12 +72,14 @@ def test_volume_profile_last_session(client, vp_env):
     assert all(lvl["volume"] > 0 for lvl in body["levels"])
 
 
-def test_snapshot_empty_when_no_feed(client, vp_env):
+def test_snapshot_uses_last_stored_close_for_equity(client, vp_env):
     r = client.get(f"/market/{vp_env['aid']}/snapshot", headers=vp_env["headers"])
     assert r.status_code == 200
     body = r.json()
-    # No live feed for this synthetic equity → tick/depth are None but the
-    # channels + status are still described.
-    assert body["tick"] is None
+    # On-demand model: an equity's tick is its latest stored close, badged
+    # DELAYED / LAST SESSION — never a fabricated live feed. No depth (there is
+    # no equity book), and the channels + status are still described.
+    assert body["tick"] is not None and float(body["tick"]["price"]) > 0
+    assert body["depth"] is None
     assert body["provenance"] in ("delayed", "last_session")
     assert body["channels"]["tick"].startswith("tick:")

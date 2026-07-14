@@ -31,8 +31,6 @@ class Settings(BaseSettings):
     APP_NAME: str = "Backtester"
     DEBUG: bool = False
 
-    # Redis (tick bus + pub/sub fan-out). Host port 6380 per docker-compose.
-    REDIS_URL: str = "redis://localhost:6380/0"
 
     # Streaming
     BINANCE_WS_URL: str = "wss://stream.binance.com:9443/stream"
@@ -46,8 +44,6 @@ class Settings(BaseSettings):
     ALLOW_SHORTING: bool = False     # v1: reject sells beyond held quantity
 
     # Backtesting
-    CELERY_BROKER_URL: str = "redis://localhost:6380/1"
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6380/2"
     # Per-job ADDRESS-SPACE ceiling (RLIMIT_AS, Linux only). Address space is
     # much larger than RSS — xgboost alone fails to mmap libxgboost.so under
     # 1GB — so this is a runaway-job bound, not a working-set budget.
@@ -88,7 +84,6 @@ class Settings(BaseSettings):
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_PER_MINUTE: int = 120
     # Celery worker's own Prometheus exposition port (separate process from web).
-    WORKER_METRICS_PORT: int = 9200
 
     @property
     def cors_origin_list(self) -> list[str]:

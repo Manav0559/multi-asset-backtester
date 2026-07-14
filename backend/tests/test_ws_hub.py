@@ -19,8 +19,6 @@ from app.core.security import create_access_token
 from app.db.session import SessionLocal
 from app.models import Asset, Portfolio, PortfolioMember, User
 from app.models.enums import AssetClass, PortfolioRole, Timeframe
-from app.streaming.bus import TickBus
-from app.streaming.envelope import make_bar
 
 
 @pytest.fixture()
@@ -90,31 +88,20 @@ def test_ws_allows_own_portfolio_channel(client, user_and_token):
         assert chan in ack["channels"]
 
 
-def test_ws_relays_published_bar_to_client(client, user_and_token):
-    """End-to-end: publish a bar to Redis, receive it on the browser socket."""
+def test_ws_relays_published_message_to_client(client, user_and_token):
+    """End-to-end: publish on the in-process bus, receive it on the socket."""
+    from app.streaming.inproc_bus import bus
+
     _, token = user_and_token
     channel = "bar:BINANCE:BTCUSDT:1m"
     with client.websocket_connect(f"/ws?token={token}") as ws:
         ws.receive_text()  # connected
         ws.send_text(json.dumps({"action": "subscribe", "channels": [channel]}))
         ws.receive_text()  # subscribed ack
-        time.sleep(0.3)    # let the hub's psubscribe register in Redis
+        time.sleep(0.1)
 
-        # Publish through a separate bus connection (as an adapter would),
-        # on its own event loop in this test thread.
-        import asyncio
-        from datetime import datetime, timezone
-
-        async def _pub():
-            bus = TickBus()
-            await bus.connect()
-            await bus.publish_bar(make_bar(
-                "BTCUSDT", "BINANCE", AssetClass.CRYPTO, Timeframe.M1,
-                ts=datetime(2025, 6, 1, tzinfo=timezone.utc),
-                o=100, h=110, l=99, c=108, volume=42, is_closed=True))
-            await bus.close()
-
-        asyncio.run(_pub())
+        # Publish exactly as the order handler / equity poll would.
+        bus.publish(channel, {"symbol": "BTCUSDT", "close": "108"})
 
         frame = json.loads(ws.receive_text())
         assert frame["type"] == "message"
