@@ -1,6 +1,6 @@
 # Backtester — multi-asset backtesting & multiplayer paper trading
 
-[![CI](https://github.com/Manav0559/backtester/actions/workflows/ci.yml/badge.svg)](https://github.com/Manav0559/backtester/actions/workflows/ci.yml)
+[![CI](https://github.com/Manav0559/multi-asset-backtester/actions/workflows/ci.yml/badge.svg)](https://github.com/Manav0559/multi-asset-backtester/actions/workflows/ci.yml)
 ![Python 3.13](https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?logo=typescript&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
