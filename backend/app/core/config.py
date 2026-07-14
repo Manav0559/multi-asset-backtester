@@ -1,4 +1,7 @@
 """Application settings loaded from environment / .env file."""
+import os
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,6 +10,22 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "postgresql+psycopg2://postgres:postgres@localhost:5433/backtester"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _assemble_database_url(cls, values: dict) -> dict:
+        """Managed hosts (Render, etc.) inject discrete POSTGRES_* vars rather
+        than a ready-made SQLAlchemy URL. When DATABASE_URL is not set explicitly
+        but POSTGRES_HOST is, build it — the driver prefix and psycopg2 dialect
+        are ours to enforce, not the platform's."""
+        if "DATABASE_URL" not in os.environ and os.environ.get("POSTGRES_HOST"):
+            user = os.environ.get("POSTGRES_USER", "postgres")
+            pw = os.environ.get("POSTGRES_PASSWORD", "")
+            host = os.environ["POSTGRES_HOST"]
+            port = os.environ.get("POSTGRES_PORT", "5432")
+            db = os.environ.get("POSTGRES_DB", "backtester")
+            values["DATABASE_URL"] = f"postgresql+psycopg2://{user}:{pw}@{host}:{port}/{db}"
+        return values
 
     # App
     APP_NAME: str = "Backtester"
