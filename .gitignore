@@ -27,6 +27,7 @@ node_modules/
 *.log
 
 # Local tooling / editor state
+HANDOFF.md
 .cursor/
 
 # macOS Finder "keep both" duplicates
