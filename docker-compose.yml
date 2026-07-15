@@ -1,13 +1,15 @@
 # Full-stack compose.
 #
-#   docker compose up -d                 → infra only (db + redis) — the cheap dev
-#                                          loop; run backend/worker/frontend locally.
+#   docker compose up -d                 → db only — the cheap dev loop; run the
+#                                          backend + frontend locally against it.
 #   docker compose --profile app up -d --build
-#                                        → the whole platform (db, redis, migrate,
-#                                          backend, worker, frontend).
+#                                        → the whole platform in one network:
+#                                          db, migrate, backend, frontend,
+#                                          prometheus, grafana. No redis/worker —
+#                                          the app is a single FastAPI process.
 #
-# db/redis keep host ports 5433/6380 so the local dev workflow is unchanged;
-# inside the compose network services talk over the default 5432/6379.
+# db keeps host port 5433 so the local dev workflow is unchanged; inside the
+# compose network services reach it on the default 5432.
 services:
   db:
     image: timescale/timescaledb:latest-pg16

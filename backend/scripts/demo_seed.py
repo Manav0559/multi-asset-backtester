@@ -3,12 +3,20 @@
     docker compose --profile app exec backend python scripts/demo_seed.py
     (or ./scripts/demo.sh from the repo root, which wraps exactly that)
 
+To seed a live deployment, point the two envs at the hosted stack:
+
+    DATABASE_URL=<postgres> BACKEND_URL=https://<app>.onrender.com \
+        python scripts/demo_seed.py
+
+DATABASE_URL is used only for the direct market-data backfill; everything else
+hits BACKEND_URL over HTTP.
+
 What it does, idempotently (safe to re-run):
   1. Backfills REAL history: AAPL + MSFT (5y daily via yfinance) and
      BTCUSDT (1000 daily bars via Binance REST).
   2. Two demo users -> two PUBLIC portfolios -> real trades through the
      order API (so ledgers, positions, and the leaderboard are live).
-  3. One backtest of each kind through the real API + Celery worker:
+  3. One backtest of each kind through the real API (FastAPI BackgroundTasks):
      classic (sma_crossover), portfolio (cross_sectional_momentum),
      ML (ml_direction), and BYOC (custom_code with the server template).
 

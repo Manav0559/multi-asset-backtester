@@ -28,6 +28,8 @@ node_modules/
 
 # Local tooling / editor state
 .claude/
+CLAUDE.md
+HANDOFF.md
 .cursor/
 
 # macOS Finder "keep both" duplicates

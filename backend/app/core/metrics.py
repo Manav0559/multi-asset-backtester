@@ -1,10 +1,9 @@
-"""Prometheus metrics — shared by the web process and the Celery worker.
+"""Prometheus metrics — exposed by the single web process at GET /metrics.
 
-Metrics live in the default registry. The web process exposes them at
-GET /metrics; the worker (a separate process, so a separate registry instance)
-serves its own exposition endpoint on WORKER_METRICS_PORT via a `worker_ready`
-signal in tasks.py. In production each process is scraped independently —
-that's the standard multi-process Prometheus pattern (no pushgateway needed).
+Metrics live in the default registry. The app runs as one process (backtests
+via FastAPI BackgroundTasks, periodic jobs on the asyncio scheduler), so there
+is no separate worker registry and no multiprocess collector — Prometheus
+scrapes this one endpoint.
 
 Route labels use the matched route TEMPLATE (`/backtests/{backtest_id}`), never
 the raw path, so label cardinality stays bounded.
@@ -27,24 +26,21 @@ HTTP_LATENCY = Histogram(
 
 BACKTEST_DURATION = Histogram(
     "backtest_duration_seconds",
-    "Wall-clock duration of a backtest run on the worker",
+    "Wall-clock duration of a backtest run (FastAPI BackgroundTasks)",
     ["strategy", "status"],  # status: completed | failed
     buckets=(0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0),
 )
 
 SNAPSHOT_LAST_SUCCESS = Gauge(
     "equity_snapshot_last_success_timestamp_seconds",
-    "Unix time of the last successful equity snapshot beat tick — alerting "
-    "fires when this goes stale (beat dead, task crashing, DB unreachable)",
-    # prefork: each child writes its own mmap value; scrape takes the newest.
-    multiprocess_mode="max",
+    "Unix time of the last successful equity snapshot tick — alerting "
+    "fires when this goes stale (scheduler dead, task crashing, DB unreachable)",
 )
 
 # ---- WS fan-out fabric (the previously-invisible layer) --------------------
 WS_CLIENTS = Gauge(
     "ws_connected_clients",
     "WebSocket clients currently connected to this hub process",
-    multiprocess_mode="livesum",
 )
 
 WS_CONFLATED = Counter(
@@ -65,13 +61,11 @@ WS_OVERFLOW_DISCONNECTS = Counter(
 DB_POOL_CHECKED_OUT = Gauge(
     "db_pool_checked_out",
     "SQLAlchemy connections currently checked out of the pool",
-    multiprocess_mode="livesum",
 )
 
 DB_POOL_SIZE = Gauge(
     "db_pool_size",
     "Configured SQLAlchemy pool size (for saturation ratio alerts)",
-    multiprocess_mode="max",
 )
 
 # ---- async backlog (the honest backpressure signals) ------------------------
@@ -79,6 +73,5 @@ DB_POOL_SIZE = Gauge(
 OUTBOX_PENDING = Gauge(
     "outbox_pending_events",
     "Outbox rows not yet published — should drain within one relay tick; "
-    "sustained >0 means the relay is dead or Redis is unreachable",
-    multiprocess_mode="mostrecent",
+    "sustained >0 means the relay tick is dead or wedged",
 )
