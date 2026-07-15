@@ -126,9 +126,7 @@ function DashboardInner() {
             </button>
           ))}
           {marketAssets.length === 0 && (
-            <p className="text-muted text-sm py-4">
-              No instruments yet — run <span className="font-mono">scripts/backfill_universe.py</span>.
-            </p>
+            <p className="text-muted text-sm py-4">No instruments in this market yet — check back soon.</p>
           )}
         </div>
       </div>
