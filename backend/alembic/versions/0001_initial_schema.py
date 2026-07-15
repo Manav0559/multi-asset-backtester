@@ -66,13 +66,21 @@ ALL_ENUMS = [
 
 
 def _timescale_available(bind) -> bool:
-    """True only when the timescaledb extension can be created. Vanilla Postgres
-    (Neon/Supabase/free tier) doesn't ship it, so the schema degrades to a plain
-    table there — the app SQL is vanilla-compatible; only compression/chunking
-    is Timescale-specific."""
-    return bool(bind.exec_driver_sql(
-        "SELECT 1 FROM pg_available_extensions WHERE name = 'timescaledb'"
-    ).first())
+    """True only when FULL (TSL-licensed) TimescaleDB is present — the path this
+    migration takes creates a hypertable AND columnar compression, and the
+    compression DDL is TSL-only.
+
+    Availability is NOT sufficient: managed Postgres (Neon/Supabase) ships the
+    Apache-2 build. It lists timescaledb in pg_available_extensions and will even
+    create a hypertable, but `ALTER TABLE ... SET (timescaledb.compress ...)`
+    errors under the 'apache' license and aborts the migration. So gate on the
+    license GUC — the preloaded library reports 'timescale' only on a full
+    install. Vanilla Postgres (no timescaledb) and the Apache-2 build both report
+    something other than 'timescale' here and take the plain-table path, which
+    the app's SQL fully supports (it never calls a Timescale function)."""
+    return bind.exec_driver_sql(
+        "SELECT current_setting('timescaledb.license', true)"
+    ).scalar() == "timescale"
 
 
 def upgrade() -> None:

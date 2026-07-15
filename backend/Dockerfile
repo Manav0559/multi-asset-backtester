@@ -1,5 +1,6 @@
-# Backend image: FastAPI web process AND the Celery worker (same code, different
-# CMD chosen in docker-compose). Python 3.13 to match dev.
+# Backend image: the single FastAPI web process (backtests run in-process via
+# BackgroundTasks; periodic jobs on the asyncio scheduler). Python 3.13 to
+# match dev.
 FROM python:3.13-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
@@ -20,10 +21,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# mmap target for prometheus multiprocess mode (used by the Celery worker).
-RUN mkdir -p /tmp/prometheus
-
 EXPOSE 8000
 
-# Default is the web process; the worker service overrides this in compose.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Entrypoint migrates to head, then serves (see start.sh). Exec-form CMD so the
+# host runs it verbatim — no shell re-parsing of a quoted command string, which
+# is what made the old inline `sh -c '...'` exit 127.
+CMD ["sh", "start.sh"]
