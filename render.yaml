@@ -17,10 +17,13 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     healthCheckPath: /health
-    dockerCommand: "sh -c 'alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT'"
+    # Start command lives in backend/start.sh (migrate to head, then serve) as the
+    # image's CMD, so Render runs it verbatim. An inline dockerCommand with quotes
+    # and `&&` exited 127 when the platform split it on whitespace and mangled the
+    # quoting; $PORT is read inside the script instead.
     envVars:
-      # Paste your Neon/Supabase pooled connection string here (in the Render
-      # dashboard). Must start with postgresql+psycopg2://
+      # Paste your Neon/Supabase DIRECT connection string here (in the Render
+      # dashboard). Must start with postgresql+psycopg2:// and keep ?sslmode=require.
       - key: DATABASE_URL
         sync: false
       # Your Vercel URL, once the frontend is deployed (e.g. https://…vercel.app).
