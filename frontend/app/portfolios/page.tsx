@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import Guard from "@/components/Guard";
-import { EmptyState } from "@/components/ui";
+import { EmptyState, Skeleton } from "@/components/ui";
 import { useToast } from "@/components/ToastProvider";
 import { api } from "@/lib/api";
 
@@ -18,15 +18,22 @@ type PendingInvite = {
 function PortfoliosInner() {
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
   const [invites, setInvites] = useState<PendingInvite[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
   const [cash, setCash] = useState("100000");
   const toast = useToast();
 
   function load() {
-    api<Portfolio[]>("/portfolios").then(setPortfolios);
+    setLoading(true);
+    api<Portfolio[]>("/portfolios")
+      .then(setPortfolios)
+      .catch((e: any) => toast.error(e.message || "Could not load portfolios"))
+      .finally(() => setLoading(false));
     api<PendingInvite[]>("/portfolios/invites/pending").then(setInvites).catch(() => {});
   }
+  // Load once on mount; `toast` is a stable context value.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(load, []);
 
   async function respondInvite(token: string, action: "accept" | "decline", pname: string) {
@@ -103,29 +110,47 @@ function PortfoliosInner() {
       )}
 
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {portfolios.map((p) => {
-          const pnl = Number(p.cash_balance) - Number(p.initial_cash);
-          return (
-            <Link key={p.id} href={`/portfolios/${p.id}`}
-              className="card p-5 hover:border-accent transition-colors">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-medium">{p.name}</h3>
-                <span className="text-xs text-muted">v{p.version}</span>
-              </div>
-              <p className="text-2xl font-mono font-semibold">
-                ${Number(p.cash_balance).toLocaleString()}
-              </p>
-              <p className={`text-sm mt-1 ${pnl >= 0 ? "text-up" : "text-down"}`}>
-                {pnl >= 0 ? "+" : ""}${pnl.toLocaleString()} cash vs start
-              </p>
-            </Link>
-          );
-        })}
-        {portfolios.length === 0 && (
+        {loading ? (
+          Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="card p-5 space-y-3">
+              <Skeleton className="h-4 w-2/3" />
+              <Skeleton className="h-7 w-1/2" />
+              <Skeleton className="h-4 w-1/3" />
+            </div>
+          ))
+        ) : portfolios.length === 0 ? (
           <div className="card md:col-span-2 lg:col-span-3">
             <EmptyState icon="◈" title="No portfolios yet"
               hint="Create one to start paper trading — invite collaborators to share the same cash balance." />
           </div>
+        ) : (
+          portfolios.map((p) => {
+            // cash_balance is FREE cash; the rest of the starting capital is
+            // deployed in open positions. Only surface realized gains as green —
+            // deployed cash is not a loss, so it must not read red.
+            const cash = Number(p.cash_balance);
+            const delta = cash - Number(p.initial_cash);
+            return (
+              <Link key={p.id} href={`/portfolios/${p.id}`}
+                className="card p-5 hover:border-accent transition-colors">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-medium">{p.name}</h3>
+                  <span className="text-xs text-muted">v{p.version}</span>
+                </div>
+                <p className="text-2xl font-mono font-semibold">
+                  ${cash.toLocaleString()}
+                </p>
+                <p className="text-[0.7rem] uppercase tracking-wide text-muted/70 mt-0.5">Cash balance</p>
+                <p className={`text-sm mt-2 ${delta > 0 ? "text-up" : "text-muted"}`}>
+                  {delta < 0
+                    ? `$${Math.abs(delta).toLocaleString()} deployed in positions`
+                    : delta > 0
+                      ? `+$${delta.toLocaleString()} realized in cash`
+                      : "Fully in cash"}
+                </p>
+              </Link>
+            );
+          })
         )}
       </div>
     </div>
