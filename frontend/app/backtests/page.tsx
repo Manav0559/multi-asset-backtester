@@ -180,14 +180,31 @@ function BacktestsInner() {
       } else {
         payload.asset_id = assetId;
       }
-      await api("/backtests", { method: "POST", body: JSON.stringify(payload) });
-      toast.success(`Backtest queued: ${strategy}`);
-      // Poll a few times while the Celery job finishes.
-      let tries = 0;
-      const iv = setInterval(() => {
+      const bt = await api<{ id: string }>("/backtests", {
+        method: "POST", body: JSON.stringify(payload),
+      });
+      toast.success(`Backtest started: ${strategy}`);
+      // The API returns 202 + id immediately (execution runs in a backend
+      // BackgroundTask). Poll THIS run until it reaches a terminal state —
+      // ML runs take 30-60s, so a fixed handful of ticks isn't enough.
+      const started = Date.now();
+      const iv = setInterval(async () => {
         load();
-        if (++tries > 6) clearInterval(iv);
-      }, 1000);
+        try {
+          const d = await api<Backtest>(`/backtests/${bt.id}`);
+          if (d.status === "completed" || d.status === "failed") {
+            clearInterval(iv);
+            load();
+            if (d.status === "completed") {
+              toast.success(`Backtest completed: ${strategy}`);
+            } else {
+              toast.error(`Backtest failed: ${strategy}`);
+            }
+          } else if (Date.now() - started > 180_000) {
+            clearInterval(iv);   // stop polling after 3 min; the row stays visible
+          }
+        } catch { /* transient poll failure — keep trying until the cap */ }
+      }, 3000);
     } catch (err: any) {
       setSubmitError(err?.message ?? String(err));
       toast.error(err?.message ?? "Backtest submission failed");
