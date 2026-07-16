@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     # leverage); 2.0 = buy/hold up to 2x account equity. Enforced under the
     # portfolio row lock in execution.py — the ledger has no cash>=0 floor now.
     MAX_LEVERAGE: float = 2.0
+    # Fixed slippage charged per side on live fills AND backtest turnover: the
+    # fill price is worsened by this many bps (buys pay up, sells receive less).
+    # A close-price fill with zero friction reports returns nobody can capture.
+    SLIPPAGE_BPS: float = 5.0
+    # Initial margin for opening/extending a short: the short-opening notional
+    # must be backed by this fraction of value (Reg-T style 150% = proceeds
+    # + 50% margin). The (requirement - 1) excess is charged against buying
+    # power under the same row lock, capping maximum short exposure.
+    SHORT_MARGIN_REQUIREMENT: float = 1.5
 
     # Backtesting
     # Per-job ADDRESS-SPACE ceiling (RLIMIT_AS, Linux only). Address space is

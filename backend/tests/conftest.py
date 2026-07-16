@@ -7,6 +7,9 @@ import os
 # up: the whole suite fires from one client IP within a single 60s window and
 # would trip the per-IP rate limiter. Throttling is prod behavior, not test.
 os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
+# Frictionless fills for the arithmetic-exact ledger tests; the slippage model
+# itself is exercised explicitly in test_execution_frictions.py.
+os.environ.setdefault("SLIPPAGE_BPS", "0")
 
 import uuid
 

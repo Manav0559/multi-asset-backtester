@@ -24,6 +24,7 @@ class BacktestCreate(BaseModel):
     end: str | None = None
     initial_capital: float = 100_000.0
     commission_bps: float = 0.0
+    slippage_bps: float = 5.0                   # per-side fill friction (CostModel)
     n_trials: int = 1
     # Long/short portfolio controls (ignored by single-asset strategies)
     borrow_bps_annual: float = 0.0
