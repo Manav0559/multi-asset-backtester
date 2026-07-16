@@ -8,6 +8,10 @@ rather than re-querying bars per timestamp, which keeps reconstruction
 O(entries) on a single query. A final "now" point marks open positions at the
 latest market close, so the curve ends at the same equity number the
 leaderboard ranks on.
+
+TODO: this replays the full ledger on every request, and the frontend now polls
+it every 30s per viewer. Fine at demo scale; once portfolios accumulate real
+history, cache the replayed curve and extend it from the last snapshot instead.
 """
 from __future__ import annotations
 
