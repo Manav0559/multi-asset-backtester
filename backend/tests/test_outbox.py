@@ -86,11 +86,12 @@ def test_fill_writes_outbox_and_fast_path_marks_it(client, ob_env):
 
 
 def test_reject_does_not_write_outbox(client, ob_env):
-    # Insufficient buying power (200 @ 100 = 20000 > 10000 cash) still rejects —
-    # oversell no longer does, now that shorting is enabled.
+    # Insufficient buying power (300 @ 100 = 30000 > 20000 buying power at 2x on
+    # 10000 cash) still rejects — oversell no longer does (shorting), and a buy
+    # within leverage would fill, so this exceeds even the levered limit.
     r = client.post(f"/portfolios/{ob_env['pid']}/orders", headers=ob_env["h"],
-                    json={"asset_id": ob_env["aid"], "side": "buy", "qty": "200"})
-    assert r.json()["status"] == "rejected"       # not enough cash
+                    json={"asset_id": ob_env["aid"], "side": "buy", "qty": "300"})
+    assert r.json()["status"] == "rejected"       # beyond buying power
     assert _outbox_rows(ob_env["pid"]) == []      # ephemeral: fast-path only
 
 

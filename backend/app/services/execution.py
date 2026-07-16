@@ -89,6 +89,36 @@ def _commission(notional: Decimal) -> Decimal:
     return (notional * bps).quantize(_CENTS, rounding=ROUND_HALF_UP)
 
 
+def _net_positions_usd(db: Session, portfolio_id: uuid.UUID) -> Decimal:
+    """Σ signed qty · latest mark / fx over a portfolio's open positions (USD)."""
+    from app.services.pricing import latest_price
+    from app.services.valuation import usd_factors
+    rows = db.execute(
+        select(Position.asset_id, Position.qty, Position.avg_entry_price)
+        .where(Position.portfolio_id == portfolio_id, Position.qty != 0)
+    ).all()
+    if not rows:
+        return Decimal("0")
+    fx = usd_factors(db, {r.asset_id for r in rows})
+    total = Decimal("0")
+    for aid, qty, avg in rows:
+        mark = latest_price(db, aid) or avg
+        total += (qty * mark) / fx.get(aid, Decimal("1"))
+    return total
+
+
+def _buying_power(db: Session, portfolio_id: uuid.UUID, cash: Decimal) -> Decimal:
+    """Cash plus the margin the account's equity supports:
+    cash + (MAX_LEVERAGE-1)*max(equity,0), equity = cash + net position value.
+    MAX_LEVERAGE=1 collapses this to plain cash. Computed under the caller's
+    portfolio row lock, so it serializes with concurrent orders on the book."""
+    lev = Decimal(str(settings.MAX_LEVERAGE))
+    if lev <= 1:
+        return cash
+    equity = cash + _net_positions_usd(db, portfolio_id)
+    return cash + (lev - Decimal("1")) * max(equity, Decimal("0"))
+
+
 def _result_from_existing(db: Session, order: Order, portfolio: Portfolio) -> ExecutionResult:
     """Reconstruct the original outcome of an already-processed order so a
     retry with the same idempotency key gets an identical response."""
@@ -191,9 +221,11 @@ def execute_market_order(
     # buying a short back. Sells may open a short when ALLOW_SHORTING is set.
     if side == OrderSide.BUY:
         required = notional + commission
-        if portfolio.cash_balance < required:
+        bp = _buying_power(db, portfolio_id, portfolio.cash_balance)
+        if bp < required:
             return _reject(
-                f"insufficient funds: need {required}, have {portfolio.cash_balance}"
+                f"insufficient funds: need {required}, buying power {bp} "
+                f"(cash {portfolio.cash_balance}, {settings.MAX_LEVERAGE}x lev)"
             )
     elif not settings.ALLOW_SHORTING:
         held = position.qty if position else Decimal("0")

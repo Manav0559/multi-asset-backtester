@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     # Paper trading execution
     COMMISSION_BPS: float = 0.0      # commission in basis points of notional
     ALLOW_SHORTING: bool = True      # sells may open/extend a short (negative position)
+    # Buying power = cash + (MAX_LEVERAGE-1)*max(equity,0). 1.0 = cash-only (no
+    # leverage); 2.0 = buy/hold up to 2x account equity. Enforced under the
+    # portfolio row lock in execution.py — the ledger has no cash>=0 floor now.
+    MAX_LEVERAGE: float = 2.0
 
     # Backtesting
     # Per-job ADDRESS-SPACE ceiling (RLIMIT_AS, Linux only). Address space is

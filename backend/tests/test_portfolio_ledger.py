@@ -138,8 +138,10 @@ def test_buy_then_sell_realizes_pnl(env):
 
 # ----------------------------------------------- THE HEADLINE: concurrency --
 def test_concurrent_orders_cannot_double_spend(env):
-    """Two simultaneous buys of 800 each against a 1000 balance. Exactly one
-    must fill; cash must never go negative; version bumps exactly once."""
+    """Two simultaneous buys of 1500 each against 1000 cash at 2x leverage
+    (buying power 2000). Each fits alone, but not together — exactly one must
+    fill. The SELECT ... FOR UPDATE lock serializes the buying-power check, so
+    the second sees the first's spend and is rejected."""
     barrier = Barrier(2)
 
     def _place():
@@ -147,7 +149,7 @@ def test_concurrent_orders_cannot_double_spend(env):
         with SessionLocal() as db:
             return execute_market_order(
                 db, portfolio_id=env["portfolio_id"], user_id=env["user_id"],
-                asset_id=env["asset_id"], side=OrderSide.BUY, qty=Decimal("8"),
+                asset_id=env["asset_id"], side=OrderSide.BUY, qty=Decimal("15"),
             )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -161,8 +163,9 @@ def test_concurrent_orders_cannot_double_spend(env):
 
     with SessionLocal() as db:
         p = db.get(Portfolio, env["portfolio_id"])
-        assert p.cash_balance == Decimal("200.00")   # 1000 - 800, never negative
-        assert p.cash_balance >= 0
+        # 1000 - 1500 = -500: negative is legitimate margin now, but only ONE
+        # order's worth — the second could never double-spend the buying power.
+        assert p.cash_balance == Decimal("-500.00")
         assert p.version == 1                          # only the fill bumped it
         trades = db.query(Trade).filter_by(portfolio_id=env["portfolio_id"]).count()
         assert trades == 1

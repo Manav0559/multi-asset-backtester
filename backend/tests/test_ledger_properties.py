@@ -5,7 +5,7 @@ user identities on ONE shared portfolio; each workload runs concurrently
 across 8 threads (each its own Postgres connection). After every interleaving
 the shared ledger must satisfy:
 
-  1. cash_balance >= 0                       (DB CHECK constraint is the backstop)
+  1. buying power is never over-spent        (execution._buying_power, under lock)
   2. initial_cash + Σ ledger.amount == cash  (self-verifying ledger replay)
   3. cash ∈ {ledger.balance_after}            (the last-committed entry recorded it)
   4. Σ signed trade qty == position.qty       (positions reconcile with fills)
@@ -16,9 +16,10 @@ whichever transaction committed last stamped its balance_after with the final
 cash, so the final balance must appear in the set.
 
 The SELECT-FOR-UPDATE serialization in execute_market_order is what makes
-these hold under contention. `test_check_constraint_is_the_backstop` proves
-the DB-level guarantee directly: a raw UPDATE to a negative balance is
-rejected, so even an app-logic bug cannot produce negative cash.
+these hold under contention. With margin enabled (MAX_LEVERAGE > 1) cash may go
+negative, so the double-spend backstop is the app-layer buying-power check under
+the row lock, not a DB CHECK — `test_buying_power_enforced_under_leverage`
+proves an over-leveraged buy is rejected.
 
 Note on tooling: this uses a seeded random loop, NOT Hypothesis @given.
 Hypothesis's shrink/replay model assumes the test is a deterministic function
@@ -34,7 +35,6 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import delete, func, select, text
-from sqlalchemy.exc import IntegrityError
 
 from app.core.security import hash_password
 from app.db.session import SessionLocal
@@ -136,7 +136,8 @@ def test_concurrent_multiuser_ledger_invariants(shared_env, seed):
                     Trade.qty * text("CASE WHEN side='buy' THEN 1 ELSE -1 END")), 0))
                 .where(Trade.portfolio_id == pid)) or Decimal("0")
 
-        assert pf.cash_balance >= 0                                   # (1)
+        # (1) cash may be negative under margin; the buying-power check under the
+        #     row lock is what prevents over-spend (see the dedicated test below).
         assert pf.initial_cash + ledger_sum == pf.cash_balance         # (2)
         if balance_afters:
             assert pf.cash_balance in balance_afters                   # (3)
@@ -148,14 +149,26 @@ def test_concurrent_multiuser_ledger_invariants(shared_env, seed):
         _wipe_portfolio(pid)
 
 
-def test_check_constraint_is_the_backstop(shared_env):
-    """cash_balance >= 0 is enforced by the DATABASE, not just app logic."""
-    pid = _new_portfolio(shared_env["user_ids"][0])
+def test_buying_power_enforced_under_leverage(shared_env):
+    """Margin removed the DB cash floor, so the buying-power check under the
+    portfolio row lock is the backstop now. A buy within 2x equity fills (cash
+    goes negative — legitimate margin); a buy beyond buying power is rejected."""
+    aid = shared_env["asset_id"]
+    pid = _new_portfolio(shared_env["user_ids"][0])   # 10000 cash, price 100
+    uid = shared_env["user_ids"][0]
     try:
+        # 150 @ 100 = 15000 <= buying power 20000 (2x of 10000 equity): fills.
         with SessionLocal() as db:
-            with pytest.raises(IntegrityError):
-                db.execute(text("UPDATE portfolios SET cash_balance = -1 WHERE id = :p"),
-                           {"p": str(pid)})
-                db.commit()
+            r = execute_market_order(db, portfolio_id=pid, user_id=uid,
+                                     asset_id=aid, side=OrderSide.BUY, qty=Decimal("150"))
+        assert r.filled
+        with SessionLocal() as db:
+            assert db.get(Portfolio, pid).cash_balance == Decimal("-5000.00")  # on margin
+        # equity now ~10000 (−5000 cash + 15000 position) → buying power ~5000.
+        # A 10000 buy exceeds it and is rejected.
+        with SessionLocal() as db:
+            r = execute_market_order(db, portfolio_id=pid, user_id=uid,
+                                     asset_id=aid, side=OrderSide.BUY, qty=Decimal("100"))
+        assert not r.filled and "insufficient funds" in r.reason
     finally:
         _wipe_portfolio(pid)
