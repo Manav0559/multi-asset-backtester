@@ -90,6 +90,14 @@ function BacktestDetail() {
             {bt.config?.label ? `${bt.config?.strategy} · ` : ""}Backtest {bt.id.slice(0, 8)} — status:{" "}
             <span className="text-slate-200">{bt.status}</span>
           </p>
+          {/* Honest-data disclaimer: the universe is CURRENT index members, not
+              point-in-time constituents, so multi-year results are biased toward
+              survivors. Free-tier data can't fix this; the badge can be honest. */}
+          <span className="inline-flex items-center gap-1.5 mt-2 px-2 py-0.5 rounded-md
+                           bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px]"
+                title="The asset universe contains today's index constituents only — names that were delisted or dropped from the index are missing, which biases multi-year results upward.">
+            ⚠ Simulation subject to survivorship bias (current universe only)
+          </span>
         </div>
         <button onClick={deleteRun}
           className="btn-ghost border border-down/40 text-down text-sm active:scale-95">
