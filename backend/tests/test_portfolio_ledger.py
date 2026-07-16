@@ -98,13 +98,19 @@ def test_insufficient_funds_rejected_not_negative(env):
     assert res.version == 0
 
 
-def test_sell_without_position_rejected(env):
+def test_sell_without_position_opens_short(env):
+    """Shorting is enabled: a sell with nothing held opens a negative position
+    and credits the proceeds to cash (rather than rejecting)."""
     with SessionLocal() as db:
         res = execute_market_order(db, portfolio_id=env["portfolio_id"],
                                    user_id=env["user_id"], asset_id=env["asset_id"],
                                    side=OrderSide.SELL, qty=Decimal("1"))
-    assert res.status == OrderStatus.REJECTED
-    assert "insufficient position" in res.reason
+    assert res.filled
+    assert res.cash_balance == Decimal("1100.00")     # 1000 + 100 short proceeds
+    with SessionLocal() as db:
+        pos = db.get(Position, (env["portfolio_id"], env["asset_id"]))
+        assert pos.qty == Decimal("-1")               # negative = short
+        assert pos.avg_entry_price == Decimal("100")
 
 
 def test_buy_then_sell_realizes_pnl(env):

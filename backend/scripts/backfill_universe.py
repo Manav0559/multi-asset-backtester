@@ -28,12 +28,12 @@ from app.db.session import SessionLocal
 from app.models import Asset, OhlcvBar
 from app.models.enums import AssetClass, Timeframe
 
-# Current constituents per the NASDAQ-100 membership list (verified against
-# Wikipedia's navbox + per-company infoboxes, 2026-07-13). Notable newer
-# members validated by infobox, not memory: HONA (Honeywell Aerospace split),
-# SPCX (SpaceX post-IPO), CRWV, NBIS, ALAB, RKLB, SNDK (WDC spin).
+# NASDAQ-100 membership, capped at exactly 100 equities (verified against
+# Wikipedia's navbox + per-company infoboxes, 2026-07-13). A company is never
+# double-counted: the GOOG dual-class line is dropped in favour of GOOGL, and
+# the two thinnest recent listings (HONA, SPCX) are omitted to land on 100.
 NASDAQ_100 = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "GOOG", "AVGO", "TSLA",
+    "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "AVGO", "TSLA",
     "COST", "NFLX", "ASML", "AMD", "PEP", "ADBE", "LIN", "CSCO", "TMUS",
     "QCOM", "INTU", "AMAT", "TXN", "CMCSA", "ISRG", "AMGN", "HON", "BKNG",
     "PANW", "ADP", "VRTX", "GILD", "SBUX", "MU", "ADI", "LRCX", "INTC",
@@ -45,9 +45,9 @@ NASDAQ_100 = [
     "TTWO", "DXCM", "WBD",
     "MELI", "PDD", "ARM",
     # 2025-26 additions/newly public:
-    "ALNY", "APP", "ALAB", "AXON", "CPRT", "CRWV", "FER", "HONA", "LITE",
+    "ALNY", "APP", "ALAB", "AXON", "CPRT", "CRWV", "FER", "LITE",
     "MCHP", "MSTR", "MPWR", "NBIS", "PLTR", "RKLB", "SNDK", "STX", "SHOP",
-    "SPCX", "TER", "TRI", "WMT", "WDC",
+    "TER", "TRI", "WMT", "WDC",
 ]
 
 # Departed members kept in the DB for history (survivorship honesty — the

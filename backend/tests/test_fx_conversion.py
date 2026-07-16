@@ -106,15 +106,31 @@ def test_valuations_convert_inr_marks(client, fx_env):
         assert curve[-1].equity - curve[-1].cash == Decimal("25.00")
 
 
-def test_missing_fx_rate_rejects_trade(client, fx_env):
+def test_missing_fx_rate_uses_fallback(client, fx_env, monkeypatch):
+    """No stored rate and no live fetch → the trade still fills using the
+    fallback constant, so an international trade never blocks on a cold feed."""
+    import app.services.fx as fx_mod
+    monkeypatch.setattr(fx_mod, "_fetch_spot", lambda pair: None)  # force fallback
+    fallback = fx_mod.FALLBACK_RATES["INR"]
     with SessionLocal() as db:
         row = db.get(FxRate, "USDINR")
-        db.delete(row); db.commit()
+        if row:
+            db.delete(row); db.commit()
     try:
         r = client.post(f"/portfolios/{fx_env['pid']}/orders", headers=fx_env["h"],
                         json={"asset_id": fx_env["aid"], "side": "buy", "qty": "1"})
-        assert r.status_code == 422
-        assert "FX rate" in r.json()["detail"]
-    finally:  # restore for the fixture's teardown bookkeeping
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "filled"
+        # cash debited by PRICE_INR / fallback, and the fallback got persisted
+        spent = Decimal("1000.00") - Decimal(r.json()["cash_balance"])
+        assert spent == (PRICE_INR / fallback).quantize(Decimal("0.01"))
         with SessionLocal() as db:
-            db.add(FxRate(pair="USDINR", rate=RATE)); db.commit()
+            assert Decimal(db.get(FxRate, "USDINR").rate) == fallback
+    finally:  # restore the pinned test rate for the fixture's teardown bookkeeping
+        with SessionLocal() as db:
+            row = db.get(FxRate, "USDINR")
+            if row:
+                row.rate = RATE
+            else:
+                db.add(FxRate(pair="USDINR", rate=RATE))
+            db.commit()
