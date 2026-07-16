@@ -32,9 +32,11 @@ function PortfolioDetail() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [online, setOnline] = useState<OnlineUser[]>([]);
   const [flash, setFlash] = useState(false);
+  const [pending, setPending] = useState(false);
 
   // Trade form
   const [assetId, setAssetId] = useState<number | null>(null);
+  const [estPrice, setEstPrice] = useState<number | null>(null);
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [qty, setQty] = useState("1");
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
@@ -70,6 +72,15 @@ function PortfolioDetail() {
     return () => clearInterval(t);
   }, [load]);
 
+  // Latest price for the selected asset — powers the optimistic cash estimate
+  // on a trade (the real fill is reconciled by load() right after).
+  useEffect(() => {
+    if (assetId == null) { setEstPrice(null); return; }
+    api<{ tick: { price: string } | null }>(`/market/${assetId}/snapshot`)
+      .then((s) => setEstPrice(s.tick ? Number(s.tick.price) : null))
+      .catch(() => setEstPrice(null));
+  }, [assetId]);
+
   // Live shared-ledger sync: when ANY collaborator trades, the hub pushes a
   // portfolio:{id} event and we refresh + flash the balance. Presence
   // join/leave broadcasts refresh only the avatar roster; chat/typing are the
@@ -93,23 +104,61 @@ function PortfolioDetail() {
   async function trade(e: React.FormEvent) {
     e.preventDefault();
     setMsg(null);
+    const qtyNum = Number(qty);
+    if (assetId == null || !(qtyNum > 0) || !pf) return;
+    const ccy = assets.find((a) => a.id === assetId)?.currency;
+    const isUsd = !ccy || ccy === "USD";
+
+    // Optimistic update: move the shared cash + positions the instant the user
+    // clicks, then send the real order. The authoritative fill reconciles via
+    // load(); a rejection or network error rolls back to this snapshot.
+    const prevPf = pf;
+    const prevPositions = positions;
+    const signed = side === "buy" ? qtyNum : -qtyNum;
+
+    setPositions((prev) => {
+      const cur = prev.find((p) => p.asset_id === assetId);
+      if (cur) {
+        return prev
+          .map((p) => (p.asset_id === assetId ? { ...p, qty: String(Number(p.qty) + signed) } : p))
+          .filter((p) => Number(p.qty) !== 0);
+      }
+      return [...prev, {
+        asset_id: assetId, qty: String(signed),
+        avg_entry_price: String(estPrice ?? 0), realized_pnl: "0",
+      }];
+    });
+    // Cash is USD — only estimate it when the price is known in USD terms.
+    if (isUsd && estPrice != null) {
+      const notional = estPrice * qtyNum;
+      setPf({ ...pf, cash_balance: String(Number(pf.cash_balance) + (side === "buy" ? -notional : notional)) });
+    }
+    setPending(true);
+    setFlash(true);
+    setTimeout(() => setFlash(false), 800);
+
     try {
       const r = await api<{ status: string; reason: string | null; fill_price: string | null }>(
         `/portfolios/${id}/orders`,
-        { method: "POST", body: JSON.stringify({ asset_id: assetId, side, qty: Number(qty) }) }
+        { method: "POST", body: JSON.stringify({ asset_id: assetId, side, qty: qtyNum }) }
       );
       if (r.status === "filled") {
-        const ccy = assets.find((a) => a.id === assetId)?.currency;
         setMsg({ text: `Filled ${side} ${qty} @ ${money(r.fill_price, ccy)}`, ok: true });
         toast.success(`Filled ${side} ${qty} @ ${money(r.fill_price, ccy)}`);
       } else {
+        setPf(prevPf);                 // rejected — undo the optimistic update
+        setPositions(prevPositions);
         setMsg({ text: r.reason || "Rejected", ok: false });
         toast.error(r.reason || "Order rejected");
       }
-      load(); // local echo; collaborators get it via WS
+      load(); // reconcile with the authoritative ledger (collaborators get WS)
     } catch (e: any) {
+      setPf(prevPf);                   // network error — undo
+      setPositions(prevPositions);
       setMsg({ text: e.message, ok: false });
       toast.error(e.message);
+    } finally {
+      setPending(false);
     }
   }
 
@@ -232,7 +281,9 @@ function PortfolioDetail() {
             <input className="input" type="number" value={qty} min={0} step="any"
               onChange={(e) => setQty(e.target.value)} />
           </div>
-          <button className="btn-primary w-full">Submit {side}</button>
+          <button className="btn-primary w-full" disabled={pending}>
+            {pending ? "Placing…" : `Submit ${side}`}
+          </button>
           {msg && <p className={`text-sm ${msg.ok ? "text-up" : "text-down"}`}>{msg.text}</p>}
         </form>
 
