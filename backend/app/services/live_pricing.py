@@ -28,6 +28,10 @@ from app.models.enums import AssetClass, Timeframe
 
 logger = logging.getLogger("services.live_pricing")
 
+# TODO: past the free tier, move this poll to a background worker with a shared
+# cache (Redis) — the per-process TTL cache means a second web instance would
+# fan out duplicate vendor calls, and request-path fetches add tail latency.
+
 # Kept just under the client poll cadence so a steady 30s poll gets fresh marks
 # while bursts (the 4 reads per page load, or several viewers) share one fetch.
 _TTL_S = 25.0
