@@ -293,6 +293,7 @@ def _execute_single_asset(cfg: dict):
             "brier_score": round(ml.brier_score, 4) if ml.brier_score is not None else None,
             "baseline_oos_accuracy": round(ml.baseline_oos_accuracy, 4)
                 if ml.baseline_oos_accuracy is not None else None,
+            "tuned_params": getattr(ml, "tuned_params", None),
             "fold_metrics": ml.fold_metrics,
             "n_trials": n_trials,
             "feature_importance": ml.feature_importance,
@@ -302,10 +303,13 @@ def _execute_single_asset(cfg: dict):
     else:
         strategy = _build_strategy(cfg["strategy"], params)
 
+    from app.backtest.costs import CostModel
     out = run_backtest(
         df, strategy,
         initial_capital=float(cfg.get("initial_capital", 100_000)),
-        commission_bps=float(cfg.get("commission_bps", settings.COMMISSION_BPS)),
+        cost_model=CostModel(
+            commission_bps=float(cfg.get("commission_bps", settings.COMMISSION_BPS)),
+            slippage_bps=float(cfg.get("slippage_bps", settings.SLIPPAGE_BPS))),
     )
     return out, diagnostics
 
@@ -337,7 +341,9 @@ def _execute_portfolio(cfg: dict):
     out = run_portfolio_backtest(
         close_panel, strategy, volumes=vol_panel,
         initial_capital=float(cfg.get("initial_capital", 100_000)),
-        cost_model=CostModel(commission_bps=float(cfg.get("commission_bps", settings.COMMISSION_BPS))),
+        cost_model=CostModel(
+            commission_bps=float(cfg.get("commission_bps", settings.COMMISSION_BPS)),
+            slippage_bps=float(cfg.get("slippage_bps", settings.SLIPPAGE_BPS))),
         borrow_bps_annual=float(cfg.get("borrow_bps_annual", 0.0)),
         max_gross_leverage=cfg.get("max_gross_leverage"),
     )
@@ -375,6 +381,20 @@ def _persist(backtest_id: uuid.UUID, result: dict) -> None:
                 sharpe=_dec(y.sharpe), sortino=_dec(y.sortino),
                 volatility_pct=_dec(y.volatility_pct), trade_count=y.trade_count,
                 win_rate_pct=_dec(y.win_rate_pct),
+            ))
+        # Experiment log: every completed ML run records the family, the
+        # hyperparameters it actually ran with, and the honest outcome — the
+        # queryable answer to "what have we tried and how did it really score?"
+        diag = result.get("diagnostics") or {}
+        if diag.get("model_id"):
+            from app.models import MlExperiment
+            db.add(MlExperiment(
+                backtest_id=backtest_id, model_id=diag["model_id"],
+                params={**(bt.config.get("params") or {}),
+                        **({"tuned": diag["tuned_params"]} if diag.get("tuned_params") else {})},
+                oos_accuracy=_dec(diag.get("oos_accuracy")),
+                brier_score=_dec(diag.get("brier_score")),
+                sharpe=bt.sharpe, deflated_sharpe=bt.deflated_sharpe,
             ))
         db.commit()
 

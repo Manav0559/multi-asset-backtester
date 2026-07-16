@@ -167,9 +167,17 @@ def execute_market_order(
         if prior is not None:
             return _result_from_existing(db, prior, portfolio)
 
-    price = latest_price(db, asset_id)
-    if price is None:
+    mark = latest_price(db, asset_id)
+    if mark is None:
         raise ExecutionError("no market price available for asset")
+
+    # Slippage: the fill is WORSE than the mark by SLIPPAGE_BPS per side — a
+    # buy pays up, a sell receives less. The slipped price is the real fill:
+    # it drives the notional, the recorded fill_price, the cost basis, and
+    # realized P&L, so paper results stop assuming frictionless liquidity.
+    slip = Decimal(str(settings.SLIPPAGE_BPS)) / Decimal("10000")
+    price = (mark * (Decimal("1") + slip if side == OrderSide.BUY
+                     else Decimal("1") - slip)).quantize(Decimal("0.00000001"))
 
     # Multi-currency: `price` is in the ASSET's quote currency (NSE → INR);
     # cash is USD. Convert the notional through the FX rate, resolved on demand
@@ -227,10 +235,31 @@ def execute_market_order(
                 f"insufficient funds: need {required}, buying power {bp} "
                 f"(cash {portfolio.cash_balance}, {settings.MAX_LEVERAGE}x lev)"
             )
-    elif not settings.ALLOW_SHORTING:
+    else:  # SELL
         held = position.qty if position else Decimal("0")
-        if held < qty:
-            return _reject(f"insufficient position: hold {held}, tried to sell {qty}")
+        if not settings.ALLOW_SHORTING:
+            if held < qty:
+                return _reject(f"insufficient position: hold {held}, tried to sell {qty}")
+        else:
+            # Initial margin on the SHORT-OPENING portion (the part beyond any
+            # long being closed). Reg-T style: the short must be backed by
+            # SHORT_MARGIN_REQUIREMENT (e.g. 150%) of its notional; the sale
+            # proceeds cover 100%, so the excess (requirement - 1) is charged
+            # against buying power. This is what caps maximum short exposure —
+            # without it a sell could open an unlimited short for free.
+            short_qty = qty - max(held, Decimal("0"))
+            if short_qty > 0:
+                margin_req = Decimal(str(settings.SHORT_MARGIN_REQUIREMENT))
+                short_notional = ((price * short_qty) / fx).quantize(
+                    _CENTS, rounding=ROUND_HALF_UP)
+                required = ((margin_req - Decimal("1")) * short_notional).quantize(
+                    _CENTS, rounding=ROUND_HALF_UP)
+                bp = _buying_power(db, portfolio_id, portfolio.cash_balance)
+                if bp < required:
+                    return _reject(
+                        f"insufficient margin for short: need {required} "
+                        f"({margin_req}x initial margin on {short_notional} short), "
+                        f"buying power {bp}")
 
     # (3) Fill. Record order + trade.
     order = Order(

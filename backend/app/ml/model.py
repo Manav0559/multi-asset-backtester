@@ -43,11 +43,21 @@ MODEL_FAMILIES: dict[str, str] = {
 }
 
 
+def _scaled(model):
+    """Scale-sensitive families get a StandardScaler stage. Features span wildly
+    different scales (returns ~1e-2, RSI ~50, vol-z ~unit) — trees don't care,
+    but gradient-based learners (MLP, logistic) are handicapped without this.
+    The scaler is INSIDE the pipeline, so CV folds fit it on training data only."""
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+    return make_pipeline(StandardScaler(), model)
+
+
 def _make_model(model_id: str, params: dict | None):
     p = params or {}
     if model_id == "logistic_regression":
         from sklearn.linear_model import LogisticRegression
-        return LogisticRegression(max_iter=500, C=p.get("C", 1.0))
+        return _scaled(LogisticRegression(max_iter=500, C=p.get("C", 1.0)))
     if model_id == "decision_tree":
         from sklearn.tree import DecisionTreeClassifier
         return DecisionTreeClassifier(max_depth=p.get("max_depth", 4), random_state=42)
@@ -68,8 +78,8 @@ def _make_model(model_id: str, params: dict | None):
             learning_rate=p.get("learning_rate", 0.05), random_state=42)
     if model_id == "mlp":
         from sklearn.neural_network import MLPClassifier
-        return MLPClassifier(hidden_layer_sizes=p.get("hidden", (32, 16)),
-                             max_iter=p.get("max_iter", 300), random_state=42)
+        return _scaled(MLPClassifier(hidden_layer_sizes=p.get("hidden", (32, 16)),
+                                     max_iter=p.get("max_iter", 300), random_state=42))
     if model_id == "xgboost":
         from xgboost import XGBClassifier
         return XGBClassifier(
@@ -81,6 +91,8 @@ def _make_model(model_id: str, params: dict | None):
 
 
 def _importance(model) -> np.ndarray | None:
+    if hasattr(model, "steps"):        # Pipeline: importance lives on the estimator
+        model = model[-1]
     if hasattr(model, "feature_importances_"):
         return np.asarray(model.feature_importances_, dtype=float)
     if hasattr(model, "coef_"):
@@ -96,6 +108,7 @@ class MLResult:
     model_id: str = "xgboost"
     brier_score: float | None = None            # calibration quality on OOS probs
     baseline_oos_accuracy: float | None = None  # logistic baseline, same folds
+    tuned_params: dict | None = None            # randomized-search pick (first fold)
     fold_metrics: list = field(default_factory=list)  # [{fold,is_acc,oos_acc}]
     feature_importance: dict = field(default_factory=dict)      # mean
     feature_importance_std: dict = field(default_factory=dict)  # across folds
@@ -118,6 +131,32 @@ def _fit_predict_proba(model_id, params, Xtr, ytr, Xte, calibrate: bool):
     return model.predict_proba(Xte)[:, 1], model
 
 
+# Families with a lightweight randomized search; the rest keep fixed defaults.
+_TUNABLE = ("xgboost", "random_forest")
+_PARAM_DISTRIBUTIONS = {
+    "xgboost": {"n_estimators": [60, 120, 200], "max_depth": [2, 3, 4, 5],
+                "learning_rate": [0.01, 0.03, 0.05, 0.1]},
+    "random_forest": {"n_estimators": [80, 120, 200], "max_depth": [3, 5, 7],
+                      "min_samples_leaf": [1, 5, 10]},
+}
+
+
+def _tune_params(model_id: str, X, y, n_iter: int = 6) -> dict:
+    """Randomized search over a small grid, run ONCE on the earliest training
+    fold. That fold strictly precedes every test block of the walk-forward, and
+    the internal CV is TimeSeriesSplit (ordered), so the chosen params never see
+    test data. One search (~n_iter x 3 fits) keeps the free-tier budget sane vs
+    re-tuning per fold. Scored on Brier (probability quality, matching the
+    calibration objective) rather than accuracy."""
+    from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
+    search = RandomizedSearchCV(
+        _make_model(model_id, None), _PARAM_DISTRIBUTIONS[model_id],
+        n_iter=n_iter, cv=TimeSeriesSplit(n_splits=3),
+        scoring="neg_brier_score", random_state=42, n_jobs=1)
+    search.fit(X, y)
+    return dict(search.best_params_)
+
+
 def run_ml_direction(
     df: pd.DataFrame,
     *,
@@ -129,6 +168,7 @@ def run_ml_direction(
     prob_threshold: float = 0.5,
     calibrate: bool = True,
     model_params: dict | None = None,
+    tune: bool = True,
 ) -> MLResult:
     """Walk-forward train/predict for one model family; OOS signal + diagnostics."""
     if model_id not in MODEL_FAMILIES:
@@ -150,9 +190,19 @@ def run_ml_direction(
     all_proba: list[np.ndarray] = []
     base_correct = base_total = 0
 
+    tuned_params: dict | None = None
     # purge >= label horizon is the leakage-critical gap; embargo is extra buffer.
     for i, (tr, te) in enumerate(walk_forward_splits(len(X), n_splits, embargo=embargo, purge=horizon)):
         Xtr, ytr, Xte, yte = X.iloc[tr], y.iloc[tr], X.iloc[te], y.iloc[te]
+        # Tune once on the first (earliest) training fold; explicit user params
+        # always win over the search.
+        if i == 0 and tune and not model_params and model_id in _TUNABLE \
+                and len(Xtr) >= 120 and ytr.nunique() > 1:
+            try:
+                tuned_params = _tune_params(model_id, Xtr, ytr)
+                model_params = tuned_params
+            except Exception:  # noqa: BLE001 — search failure falls back to defaults
+                tuned_params = None
         proba, fitted = _fit_predict_proba(model_id, model_params, Xtr, ytr, Xte, calibrate)
         preds = (proba > prob_threshold).astype(float)
         signal.loc[X.index[te]] = preds
@@ -185,6 +235,7 @@ def run_ml_direction(
     return MLResult(
         signal=signal, oos_accuracy=oos_acc, n_predictions=int(len(true)),
         model_id=model_id, brier_score=brier, baseline_oos_accuracy=base_acc,
+        tuned_params=tuned_params,
         fold_metrics=fold_metrics,
         feature_importance={FEATURE_COLUMNS[i]: round(float(imp_mean[i]), 4) for i in order},
         feature_importance_std={FEATURE_COLUMNS[i]: round(float(imp_std[i]), 4) for i in order},

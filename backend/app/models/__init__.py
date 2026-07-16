@@ -7,6 +7,7 @@ from app.models.challenge import Challenge
 from app.models.chat import ChatMessage
 from app.models.fx import FxRate
 from app.models.market_data import OhlcvBar
+from app.models.ml_experiment import MlExperiment
 from app.models.ml_trial import MlTrial
 from app.models.outbox import OutboxEvent
 from app.models.portfolio import Portfolio, PortfolioInvite, PortfolioMember
@@ -32,6 +33,7 @@ __all__ = [
     "Strategy",
     "StrategyVersion",
     "LedgerEntry",
+    "MlExperiment",
     "MlTrial",
     "Order",
     "Position",
