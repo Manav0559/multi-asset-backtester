@@ -62,6 +62,14 @@ function PortfolioDetail() {
     }).catch(() => {});
   }, [load, loadPresence]);
 
+  // Silent 30s heartbeat: the backend refreshes marks on-demand for held
+  // positions, so equity ticks without a manual refresh. load() replaces state
+  // in place (never clears it), so polls don't flicker the UI.
+  useEffect(() => {
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, [load]);
+
   // Live shared-ledger sync: when ANY collaborator trades, the hub pushes a
   // portfolio:{id} event and we refresh + flash the balance. Presence
   // join/leave broadcasts refresh only the avatar roster; chat/typing are the
@@ -120,6 +128,13 @@ function PortfolioDetail() {
     );
   }
   const pnl = Number(pf.cash_balance) - Number(pf.initial_cash);
+  // Total equity = the terminal point of the ledger-replay curve (cash +
+  // positions marked at the latest close, refreshed on-demand by the backend);
+  // falls back to cash before any history exists. This is the number that ticks.
+  const equityNow = equityHistory.length
+    ? Number(equityHistory[equityHistory.length - 1].equity)
+    : Number(pf.cash_balance);
+  const totalPnl = equityNow - Number(pf.initial_cash);
   const symOf = (aid: number) => assets.find((a) => a.id === aid)?.symbol ?? `#${aid}`;
   const ccyOf = (aid: number) => assets.find((a) => a.id === aid)?.currency;
 
@@ -133,7 +148,17 @@ function PortfolioDetail() {
         <PresenceAvatars online={online} />
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="card p-4">
+          <p className="text-xs text-muted mb-1 flex items-center justify-between gap-2">
+            Total equity
+            <ProvenanceBadge provenance="delayed" label="DELAYED" title="Marked on-demand at the latest close — not a live feed" />
+          </p>
+          <p className="stat">${equityNow.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
+          <p className={`text-xs mt-0.5 ${totalPnl >= 0 ? "text-up" : "text-down"}`}>
+            {totalPnl >= 0 ? "+" : ""}${totalPnl.toLocaleString(undefined, { maximumFractionDigits: 2 })} vs start
+          </p>
+        </div>
         <div className={`card p-4 transition-colors ${flash ? "border-accent" : ""}`}>
           <p className="text-xs text-muted mb-1">Shared cash balance</p>
           <p className={`stat ${flash ? "text-accent" : ""}`}>

@@ -37,6 +37,7 @@ from app.schemas.portfolio import (
     PositionOut,
 )
 from app.services.equity import EquityPoint, equity_histories
+from app.services.live_pricing import sync_prices
 
 router = APIRouter(prefix="/portfolios", tags=["portfolios"])
 
@@ -168,7 +169,13 @@ def equity_history(portfolio_id: uuid.UUID,
                    member: PortfolioMember = Depends(require_portfolio_role(PortfolioRole.VIEWER)),
                    db: Session = Depends(get_db)) -> list[EquityPoint]:
     """Equity over time, reconstructed from the ledger (see services/equity.py
-    for the marking model). Feeds the portfolio page chart."""
+    for the marking model). Feeds the portfolio page chart + total."""
+    # On-demand "live-ish" marks: refresh prices for this book's open positions
+    # (cache-bounded) before marking, so the terminal equity point ticks between
+    # trades as the frontend polls.
+    held = set(db.scalars(select(Position.asset_id).where(
+        Position.portfolio_id == portfolio_id, Position.qty != 0)).all())
+    sync_prices(db, held)
     return equity_histories(db, [portfolio_id])[portfolio_id]
 
 

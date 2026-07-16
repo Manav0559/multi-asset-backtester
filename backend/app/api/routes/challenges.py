@@ -17,6 +17,8 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models import Challenge, Portfolio, PortfolioMember, User
 from app.models.enums import ChallengeStatus
+from app.models.trading import Position
+from app.services.live_pricing import sync_prices
 from app.schemas.challenge import (
     ChallengeAccept,
     ChallengeCreate,
@@ -153,6 +155,13 @@ def head_to_head(challenge_id: uuid.UUID, user: User = Depends(get_current_user)
         op_m = ch.final_metrics["opponent"]
     else:
         frozen = False
+        # On-demand "live-ish" marks: refresh prices for both books' open
+        # positions (cache-bounded) so an active competition's standings tick.
+        held = set(db.scalars(select(Position.asset_id).where(
+            Position.portfolio_id.in_(
+                [ch.challenger_portfolio_id, ch.opponent_portfolio_id]),
+            Position.qty != 0)).all())
+        sync_prices(db, held)
         ch_m = windowed_metrics(db, ch.challenger_portfolio_id,
                                 ch.challenger_baseline, ch.start_at)
         op_m = windowed_metrics(db, ch.opponent_portfolio_id,
