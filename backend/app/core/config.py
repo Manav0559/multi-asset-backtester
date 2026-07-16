@@ -41,7 +41,7 @@ class Settings(BaseSettings):
 
     # Paper trading execution
     COMMISSION_BPS: float = 0.0      # commission in basis points of notional
-    ALLOW_SHORTING: bool = False     # v1: reject sells beyond held quantity
+    ALLOW_SHORTING: bool = True      # sells may open/extend a short (negative position)
 
     # Backtesting
     # Per-job ADDRESS-SPACE ceiling (RLIMIT_AS, Linux only). Address space is

@@ -6,11 +6,11 @@ portfolio's shared cash balance. Its correctness contract:
   1. One transaction. First statement is `SELECT ... FOR UPDATE` on the
      portfolios row, so concurrent orders on the SAME portfolio serialize;
      orders on DIFFERENT portfolios never contend.
-  2. Validate against the LOCKED balance (buy) or the LOCKED position
-     (sell) — never a stale read. Insufficient funds/holdings => the order
-     is recorded as REJECTED and committed (audit trail), not silently
-     dropped, and the caller learns why.
-  3. On fill: write order(filled) + trade + position upsert + signed
+  2. Validate against the LOCKED balance — a buy (opening a long OR buying a
+     short back) needs cash; a sell may open/extend a short. Insufficient
+     buying power => the order is recorded as REJECTED and committed (audit
+     trail), not silently dropped, and the caller learns why.
+  3. On fill: write order(filled) + trade + signed position upsert + signed
      ledger entry (with balance_after) + bump portfolios.version, all in
      the same transaction. The CHECK (cash_balance >= 0) constraint is the
      last-resort backstop.
@@ -142,18 +142,16 @@ def execute_market_order(
         raise ExecutionError("no market price available for asset")
 
     # Multi-currency: `price` is in the ASSET's quote currency (NSE → INR);
-    # cash is USD. Convert the notional through the stored FX rate — and if no
-    # rate was ever fetched, REJECT: a wrong-unit ledger entry is strictly
-    # worse than a rejected order (the CHECK constraint catches signs, not
-    # units). fill_price/avg_entry stay in asset currency; ledger cash in USD.
+    # cash is USD. Convert the notional through the FX rate, resolved on demand
+    # (stored → live fetch → fallback constant) so a cold feed can't block an
+    # international trade. fill_price/avg_entry stay in asset currency; ledger
+    # cash in USD. None only for a currency the platform can't convert at all.
     from app.models import Asset as _Asset
-    from app.services.fx import usd_rate
+    from app.services.fx import ensure_usd_rate
     asset_ccy = db.scalar(select(_Asset.currency).where(_Asset.id == asset_id)) or "USD"
-    fx = usd_rate(db, asset_ccy)
+    fx = ensure_usd_rate(db, asset_ccy)
     if fx is None or fx <= 0:
-        raise ExecutionError(
-            f"no FX rate for {asset_ccy}->USD — cannot convert this trade "
-            f"honestly (rate feed has never run)")
+        raise ExecutionError(f"unsupported settlement currency {asset_ccy}")
 
     notional_ccy = (price * qty)
     notional = (notional_ccy / fx).quantize(_CENTS, rounding=ROUND_HALF_UP)  # USD
@@ -187,16 +185,19 @@ def execute_market_order(
         ).scalar_one()
         return _result_from_existing(db, prior, pf)
 
-    # (2) Validate against the LOCKED state.
+    # (2) Validate against the LOCKED state. Buying power = available cash (no
+    # synthetic leverage) — this is what keeps the shared ledger from going
+    # negative under contention; it applies equally to opening a long and to
+    # buying a short back. Sells may open a short when ALLOW_SHORTING is set.
     if side == OrderSide.BUY:
         required = notional + commission
         if portfolio.cash_balance < required:
             return _reject(
                 f"insufficient funds: need {required}, have {portfolio.cash_balance}"
             )
-    else:  # SELL
+    elif not settings.ALLOW_SHORTING:
         held = position.qty if position else Decimal("0")
-        if not settings.ALLOW_SHORTING and held < qty:
+        if held < qty:
             return _reject(f"insufficient position: hold {held}, tried to sell {qty}")
 
     # (3) Fill. Record order + trade.
@@ -215,30 +216,45 @@ def execute_market_order(
     db.add(trade)
     db.flush()
 
-    # Position + cash mutation.
+    # Position + cash mutation. Positions are SIGNED: qty > 0 long, < 0 short.
+    # Cash is direction-agnostic — a buy debits, a sell credits — so shorting
+    # (a sell that opens/extends a negative position) credits the proceeds.
+    if position is None:
+        position = Position(portfolio_id=portfolio_id, asset_id=asset_id,
+                            qty=Decimal("0"), avg_entry_price=Decimal("0"))
+        db.add(position)
+
     if side == OrderSide.BUY:
         portfolio.cash_balance = portfolio.cash_balance - notional - commission
-        if position is None:
-            position = Position(portfolio_id=portfolio_id, asset_id=asset_id,
-                                qty=Decimal("0"), avg_entry_price=Decimal("0"))
-            db.add(position)
-        new_qty = position.qty + qty
-        # weighted-average cost basis
-        position.avg_entry_price = (
-            (position.qty * position.avg_entry_price + qty * price) / new_qty
-        ).quantize(Decimal("0.00000001"))
-        position.qty = new_qty
         entry_type = LedgerEntryType.TRADE_BUY
         cash_delta = -(notional + commission)
+        signed = qty
     else:  # SELL
         portfolio.cash_balance = portfolio.cash_balance + notional - commission
-        realized = ((price - position.avg_entry_price) * qty).quantize(_CENTS)
-        position.realized_pnl = position.realized_pnl + realized
-        position.qty = position.qty - qty
-        if position.qty == 0:
-            position.avg_entry_price = Decimal("0")
         entry_type = LedgerEntryType.TRADE_SELL
         cash_delta = notional - commission
+        signed = -qty
+
+    old_qty = position.qty
+    new_qty = old_qty + signed
+    if old_qty == 0 or (old_qty > 0) == (signed > 0):
+        # Opening, or adding in the same direction → weighted-average entry.
+        position.avg_entry_price = (
+            (abs(old_qty) * position.avg_entry_price + qty * price) / abs(new_qty)
+        ).quantize(Decimal("0.00000001"))
+    else:
+        # Reducing / closing (and maybe flipping through zero). Book realized
+        # P&L on the closed portion — a long books (price − entry), a short the
+        # inverse — and any excess opens a fresh position at `price`.
+        closed = min(abs(old_qty), qty)
+        realized = ((price - position.avg_entry_price) if old_qty > 0
+                    else (position.avg_entry_price - price)) * closed
+        position.realized_pnl = position.realized_pnl + realized.quantize(_CENTS)
+        if qty > abs(old_qty):
+            position.avg_entry_price = price          # flipped: new side opens at price
+        elif new_qty == 0:
+            position.avg_entry_price = Decimal("0")
+    position.qty = new_qty
 
     # Signed ledger entry with running balance (self-verifying audit trail).
     # Non-USD fills record the quote currency AND the rate used — the ledger

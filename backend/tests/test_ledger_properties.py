@@ -142,7 +142,8 @@ def test_concurrent_multiuser_ledger_invariants(shared_env, seed):
             assert pf.cash_balance in balance_afters                   # (3)
         held = pos.qty if pos else Decimal("0")
         assert held == signed_qty                                      # (4)
-        assert held >= 0                                               # no phantom shorts
+        # (positions may be negative now that shorting is enabled; the signed
+        #  reconciliation in (4) is the invariant, not a sign restriction.)
     finally:
         _wipe_portfolio(pid)
 

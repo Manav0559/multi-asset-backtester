@@ -107,23 +107,24 @@ def test_order_rejections_over_http(client, np_env):
     headers = np_env["user"]["headers"]
     pid = _portfolio(client, headers, cash="1000.00")
 
-    # Insufficient cash: 50 @ 100 = 5000 > 1000. Rejected, cash untouched.
+    # Insufficient buying power: 50 @ 100 = 5000 > 1000. Rejected, cash untouched.
     r = client.post(f"/portfolios/{pid}/orders", headers=headers,
                     json={"asset_id": np_env["asset_id"], "side": "buy", "qty": "50"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "rejected"
     assert "insufficient funds" in body["reason"]
-
-    # Oversell: nothing held. Rejected (no shorting by default).
-    r = client.post(f"/portfolios/{pid}/orders", headers=headers,
-                    json={"asset_id": np_env["asset_id"], "side": "sell", "qty": "1"})
-    assert r.json()["status"] == "rejected"
-    assert "insufficient position" in r.json()["reason"]
-
-    # Both rejections left the shared balance exactly where it started.
+    # The rejected buy left the shared balance exactly where it started.
     r = client.get(f"/portfolios/{pid}", headers=headers)
     assert r.json()["cash_balance"] == "1000.00"
+
+    # Oversell with nothing held now OPENS A SHORT (shorting enabled) and
+    # credits the proceeds, rather than rejecting.
+    r = client.post(f"/portfolios/{pid}/orders", headers=headers,
+                    json={"asset_id": np_env["asset_id"], "side": "sell", "qty": "1"})
+    assert r.json()["status"] == "filled"
+    r = client.get(f"/portfolios/{pid}", headers=headers)
+    assert r.json()["cash_balance"] == "1100.00"     # 1000 + 100 short proceeds
 
 
 def test_sandbox_rejects_obvious_resource_abuse_shapes():
