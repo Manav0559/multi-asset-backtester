@@ -48,25 +48,22 @@ competitions.
 
 ---
 
-## One-command local demo
+## Live deployment
 
-```bash
-./scripts/demo.sh
-```
+The platform runs in production on a **$0.00/month** stack:
 
-Builds and starts the full stack, backfills **real** AAPL + MSFT (5y,
-yfinance) and BTC (Binance) daily history, creates two demo users with public
-portfolios and real trades, and runs one backtest of every kind — classic,
-long/short portfolio, XGBoost ML, and user-submitted Python. When it prints
-`✔ demo ready`:
+- **Frontend** — [multi-asset-backtester.vercel.app](https://multi-asset-backtester.vercel.app) (Vercel)
+- **Backend API** — [backtester-x37r.onrender.com](https://backtester-x37r.onrender.com/docs) (Render, single FastAPI process)
+- **Database** — Neon serverless Postgres
 
-| What | Where | Login |
-| --- | --- | --- |
-| App | http://localhost:3000 | `alice@demo.backtester.dev` / `demo-pass-123` |
-| Grafana | http://localhost:3001/d/backtester-main | `admin` / `admin` |
-| Prometheus | http://localhost:9090/alerts | — |
+Log in as `alice@demo.backtester.dev` / `demo-pass-123` — the database is
+seeded with real market history, demo portfolios with open positions, completed
+backtests of every strategy family, and an active head-to-head competition.
+The free-tier backend hibernates when idle; the first request after a quiet
+spell takes ~30–60s to wake, then everything is fast.
 
-(Ports overridable: `FRONTEND_PORT=3005 ./scripts/demo.sh`.)
+To run the same thing locally instead: `./scripts/demo.sh` builds the compose
+stack, backfills real price history, and seeds the same demo data.
 
 ---
 

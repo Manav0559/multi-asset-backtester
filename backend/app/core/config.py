@@ -32,13 +32,6 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
 
-    # Streaming
-    BINANCE_WS_URL: str = "wss://stream.binance.com:9443/stream"
-    ALPACA_API_KEY: str = ""
-    ALPACA_API_SECRET: str = ""
-    ALPACA_FEED: str = "iex"  # "iex" (free) or "sip" (paid)
-    YFINANCE_POLL_SECONDS: float = 3.0
-
     # Paper trading execution
     COMMISSION_BPS: float = 0.0      # commission in basis points of notional
     ALLOW_SHORTING: bool = True      # sells may open/extend a short (negative position)
@@ -76,7 +69,7 @@ class Settings(BaseSettings):
     # banner + force reconnect) and an epoch change as "hub restarted — resync".
     HUB_HEARTBEAT_SECONDS: float = 15.0
 
-    # Windowed leaderboard: how often the Celery beat task snapshots equity.
+    # Windowed leaderboard: how often the scheduler snapshots portfolio equity.
     EQUITY_SNAPSHOT_INTERVAL_MINUTES: int = 5
 
     # Delayed equity price poll (yfinance; NOT live — vendor-delayed ~15 min).
@@ -96,7 +89,6 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "*"
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_PER_MINUTE: int = 120
-    # Celery worker's own Prometheus exposition port (separate process from web).
 
     @property
     def cors_origin_list(self) -> list[str]:
