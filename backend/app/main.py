@@ -6,8 +6,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import text
 
 from app.api.routes.auth import router as auth_router
@@ -91,10 +89,3 @@ def health() -> dict:
     # `node` identifies the replica behind a load balancer (container hostname)
     # — how the scale-out proof (and an operator) sees round-robin working.
     return {"status": "ok", "app": settings.APP_NAME, "node": platform.node()}
-
-
-@app.get("/metrics", include_in_schema=False)
-def metrics() -> Response:
-    """Prometheus exposition for the WEB process (request counts/latency).
-    Worker metrics are served by the worker itself — see tasks.py."""
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

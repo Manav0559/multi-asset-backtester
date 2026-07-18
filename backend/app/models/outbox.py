@@ -11,10 +11,10 @@ class OutboxEvent(Base):
     """Transactional outbox for ledger-mutating portfolio events.
 
     A fill's event row is written in the SAME transaction as the ledger entry,
-    so a crash between DB commit and the Redis publish can never lose the
+    so a crash between DB commit and the bus publish can never lose the
     event: the fast path publishes immediately after commit and marks
-    `published_at`; a beat relay sweeps rows still NULL (i.e. the process died
-    in that window) and re-publishes them. Delivery is therefore at-least-once
+    `published_at`; a scheduled relay sweeps rows still NULL (i.e. the process
+    died in that window) and re-publishes them. Delivery is therefore at-least-once
     — consumers are idempotent (clients reload state keyed by `version`, and
     events carry `order_id` for dedupe).
 

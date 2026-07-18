@@ -1,14 +1,14 @@
 """E5e — presence: who's online in a shared portfolio room.
 
 Three proofs:
-  * the Redis sorted-set prunes zombies on read (a heartbeat older than the TTL
+  * the presence map prunes zombies on read (a heartbeat older than the TTL
     drops out even without a clean disconnect);
   * the WS lifecycle marks a member online on connect and offline on disconnect,
     and the REST endpoint resolves the online set to usernames (for avatars);
   * connecting a teammate broadcasts the updated online set to everyone already
     subscribed to the portfolio room (the live avatar update).
 
-Runs against the real app (lifespan starts the hub's Redis relay) + real Redis.
+Runs against the real app — lifespan binds the hub to the in-process bus.
 """
 import json
 import time

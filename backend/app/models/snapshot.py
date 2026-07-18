@@ -10,7 +10,7 @@ from app.db.base import Base
 
 
 class PortfolioEquitySnapshot(Base):
-    """Periodic equity mark per portfolio, appended by the Celery beat task.
+    """Periodic equity mark per portfolio, appended by the scheduler job.
 
     Time-windowed leaderboard returns (24h / 7d) are computed from these rows:
     the baseline for a window is the latest snapshot at or before the window

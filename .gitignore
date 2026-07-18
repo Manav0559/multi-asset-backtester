@@ -26,12 +26,6 @@ node_modules/
 .pytest_cache/
 *.log
 
-# Local tooling / editor state
-.claude/
-CLAUDE.md
-HANDOFF.md
-.cursor/
-
 # macOS Finder "keep both" duplicates
 * 2.*
 frontend/tsconfig.tsbuildinfo

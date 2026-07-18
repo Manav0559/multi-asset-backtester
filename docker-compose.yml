@@ -4,9 +4,8 @@
 #                                          backend + frontend locally against it.
 #   docker compose --profile app up -d --build
 #                                        → the whole platform in one network:
-#                                          db, migrate, backend, frontend,
-#                                          prometheus, grafana. No redis/worker —
-#                                          the app is a single FastAPI process.
+#                                          db, migrate, backend, frontend. No
+#                                          redis/worker — one FastAPI process.
 #
 # db keeps host port 5433 so the local dev workflow is unchanged; inside the
 # compose network services reach it on the default 5432.
@@ -98,57 +97,5 @@ services:
       retries: 5
       start_period: 20s
 
-  prometheus:
-    profiles: ["app"]
-    image: prom/prometheus:v2.53.0
-    container_name: backtester-prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.retention.time=7d"
-    volumes:
-      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
-      - backtester_promdata:/prometheus
-    ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
-    depends_on:
-      backend:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9090/-/ready || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  grafana:
-    profiles: ["app"]
-    image: grafana/grafana:11.1.0
-    container_name: backtester-grafana
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      # Dev default only — override in a real deployment.
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
-      GF_USERS_DEFAULT_THEME: dark
-    volumes:
-      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - backtester_grafanadata:/var/lib/grafana
-    ports:
-      # 3000 is the frontend; Grafana takes 3001 by default.
-      - "${GRAFANA_PORT:-3001}:3000"
-    depends_on:
-      prometheus:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-
 volumes:
   backtester_pgdata:
-  backtester_promdata:
-  backtester_grafanadata:

@@ -3,15 +3,13 @@
 ## Dev loop
 
 ```bash
-docker compose up -d                 # infra only: TimescaleDB :5433 + Redis :6380
+docker compose up -d                 # db only, :5433
 
 cd backend
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 alembic upgrade head
-uvicorn app.main:app --port 8000
-# second shell — worker + beat:
-celery -A app.backtest.tasks:celery_app worker -B --loglevel=info
+uvicorn app.main:app --port 8000     # one process: API + background jobs + WS
 
 cd ../frontend && npm install && npm run dev
 ```
@@ -22,7 +20,7 @@ Populated demo: `./scripts/demo.sh`.
 ## Tests
 
 ```bash
-cd backend && python -m pytest tests/ -q     # needs docker db + redis up
+cd backend && python -m pytest tests/ -q     # needs the docker db up
 cd frontend && npm run lint && npm run build
 ```
 

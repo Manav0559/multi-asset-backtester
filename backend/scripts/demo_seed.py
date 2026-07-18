@@ -198,7 +198,7 @@ def main() -> None:
         trade(bob, p_bob, btc, "buy", "0.4")
         trade(bob, p_bob, aapl, "buy", "25")
 
-    print("4/6 one backtest of each kind (through the Celery worker):")
+    print("4/6 one backtest of each kind (through the background runner):")
     template = call("/strategies/registry", token=alice)["custom_template"]  # type: ignore[index]
     run_backtest(alice, "classic: sma_crossover", {
         "strategy": "sma_crossover", "asset_id": aapl,

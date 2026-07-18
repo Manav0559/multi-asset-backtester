@@ -80,8 +80,8 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(...)):
 
 
 async def _presence(portfolio_ids: list[str], user_id, *, online: bool) -> None:
-    """Mark presence and broadcast the room's online set. Runs the sync Redis
-    ops off the event loop."""
+    """Mark presence and broadcast the room's online set. Runs the sync
+    (lock-guarded) presence ops off the event loop."""
     import asyncio
 
     from app.services.events import publish_portfolio_event

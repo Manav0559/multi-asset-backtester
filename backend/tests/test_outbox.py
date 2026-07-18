@@ -4,7 +4,7 @@ Three proofs:
   * a fill commits its event row WITH the ledger entry, and the route's
     fast-path publish marks it published (normal case leaves nothing pending);
   * a row left unpublished (process died between commit and publish) is
-    re-published by the relay onto the real Redis channel, byte-identical,
+    re-published by the relay onto the real bus channel, byte-identical,
     and marked;
   * the relay prunes old published rows so the table is bounded.
 """

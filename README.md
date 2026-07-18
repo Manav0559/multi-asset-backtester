@@ -34,13 +34,12 @@ competitions.
 | | |
 | --- | --- |
 | ![Asset chart with indicator overlays](screenshots/02-chart.png) | ![BYOC editor rejecting an import](screenshots/03-byoc.png) |
-| ![Live dashboard](screenshots/01-dashboard.png) | ![Grafana platform overview](screenshots/05-grafana.png) |
+| ![Live dashboard](screenshots/01-dashboard.png) | ![Team chat with presence avatars and typing](screenshots/10-chat-presence.png) |
 
 | | |
 | --- | --- |
 | ![Consent-based head-to-head competition](screenshots/06-compete.png) | ![Live Binance order book and trade tape](screenshots/07-orderbook.png) |
 | ![Categorized searchable strategy picker](screenshots/08-picker.png) | ![Inline ML honesty warning](screenshots/09-ml-honesty.png) |
-| ![Team chat with presence avatars and typing](screenshots/10-chat-presence.png) | |
 
 > Screenshots are generated, not hand-taken: `./scripts/demo.sh` then
 > `cd frontend && node scripts/capture-screenshots.mjs` re-captures all of them
@@ -122,8 +121,8 @@ window and stay immutable as portfolios keep trading.
 **Plus the platform underneath:** multiplayer portfolios sharing ONE cash
 balance (row-locked, idempotent fills, WebSocket-synced), a transactional
 outbox so fill events survive crashes, periodic equity snapshots backing the
-competition windows, a reaper that heals hard-killed backtests, and a
-provisioned Prometheus + Grafana observability stack with alerting.
+competition windows, a reaper that heals hard-killed backtests, and structured
+per-request logging with traceable request IDs.
 
 ---
 
@@ -148,7 +147,7 @@ Everything runs in **one FastAPI process** — that's the deployment constraint
           ledger · positions · OHLCV · outbox · snapshots · ml_experiments
 
           deploy: Vercel (frontend) + Render (backend) + Neon (Postgres) = $0
-          local:  docker compose --profile app up  (adds Prometheus + Grafana)
+          local:  docker compose --profile app up  (db + backend + frontend)
 ```
 
 - **Backend** — Python 3.13, FastAPI, SQLAlchemy 2.0, Alembic. No Celery, no
@@ -158,8 +157,8 @@ Everything runs in **one FastAPI process** — that's the deployment constraint
   and use hypertables/compression when the license allows; on managed Postgres
   (Neon ships the Apache build) they fall back to plain tables automatically.
 - **Quant/ML** — pandas, numpy, scipy, pandas-ta, scikit-learn, xgboost.
-- **Observability** — prometheus-client at `/metrics`, alert rules, and a
-  fully provisioned Grafana dashboard (local compose profile).
+- **Observability** — structured access logs with an `X-Request-ID` on every
+  request, so any client error traces to a single server log line.
 
 ---
 
@@ -187,17 +186,12 @@ frontend on every push.
 
 ---
 
-## Observability & alerting
+## Logging & rate limiting
 
-- Every request gets an `X-Request-ID` + structured access log; Prometheus
-  metrics at `GET /metrics` labeled by **route template** (bounded
-  cardinality), including `backtest_duration_seconds{strategy,status}`, WS
-  fan-out health, and DB pool saturation.
-- **Alert rules** (`observability/alerts.yml`): API 5xx ratio > 5%, p99 > 1s,
-  backtest failure ratio > 20%, and equity-snapshot staleness (scheduler
-  silent 15+ min). They surface on the Grafana dashboard's alert row.
-- **Grafana is fully provisioned from the repo** — datasource + dashboard JSON
-  under `observability/grafana/`; nothing is clicked together by hand.
+- Every request gets an `X-Request-ID` (echoed back in the response header) and
+  one structured access-log line — method, path, status, latency — so a client
+  error traces to a single server log line. A failed request logs a full
+  traceback under the same ID.
 - In-memory fixed-window rate limiter (120 req/min, fails open — see
   tradeoffs).
 
@@ -228,8 +222,8 @@ point-in-time membership — so the report says so instead of pretending.
 
 - **One process, by design.** The free-tier pivot deleted Celery, Redis, and
   the ticker daemon. Backtests run in `BackgroundTasks` with admission control
-  (estimated working-set rejection at submit), an address-space rlimit, and a
-  wall-clock kill switch; periodic jobs run on an asyncio scheduler; WS fan-out
+  (estimated working-set rejection at submit) and a wall-clock budget enforced
+  by a reaper sweep; periodic jobs run on an asyncio scheduler; WS fan-out
   is an in-process bus. The cost is a hard horizontal-scaling ceiling — the bus
   and rate limiter are process-local — and I'd reintroduce a worker tier the
   moment there's a budget for one.
@@ -284,11 +278,10 @@ point-in-time membership — so the report says so instead of pretending.
 | `POST` | `/portfolios` · `/portfolios/{id}/orders` | shared portfolios, locked-ledger fills |
 | `GET` | `/portfolios/{id}/equity-history` | ledger-replayed equity curve (marks refreshed on demand) |
 | `WS` | `/ws` | live price + portfolio event fan-out |
-| `GET` | `/metrics` | Prometheus exposition |
 
 ## Configuration
 
 Everything loads from env / `backend/.env` (`backend/.env.example`). Notable:
 `DATABASE_URL`, `JWT_SECRET`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`,
 `COMMISSION_BPS`, `SLIPPAGE_BPS`, `MAX_LEVERAGE`, `SHORT_MARGIN_REQUIREMENT`,
-`BACKTEST_MEMORY_CAP_MB`.
+`BACKTEST_TIME_LIMIT_S`.

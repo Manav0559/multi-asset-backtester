@@ -48,11 +48,6 @@ class Scheduler:
             self._tasks.append(asyncio.create_task(_run_job(name, interval, fn),
                                                    name=f"job-{name}"))
         logger.info("scheduler started (%d jobs)", len(self._tasks))
-        # Seed the snapshot-freshness gauge so a cold start doesn't flap the
-        # staleness alert until the first tick lands.
-        from app.core.metrics import SNAPSHOT_LAST_SUCCESS
-        import time
-        SNAPSHOT_LAST_SUCCESS.set(time.time())
 
     async def stop(self) -> None:
         for t in self._tasks:
