@@ -6,8 +6,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 ![Tests](https://img.shields.io/badge/tests-181%20passing-brightgreen)
 
-** Live demo: [multi-asset-backtester.vercel.app](https://multi-asset-backtester.vercel.app)**
-(API: [backtester-x37r.onrender.com](https://backtester-x37r.onrender.com/docs);
+**🔴 Live demo: [multi-asset-backtester.vercel.app](https://multi-asset-backtester.vercel.app)**
+(API: [backtester-x37r.onrender.com](https://backtester-x37r.onrender.com/docs); the free-tier
+backend sleeps when idle, so the first request can take ~30–60s to wake.)
 
 ## Why I built this
 
@@ -19,9 +20,10 @@ features, cherry-picked Sharpe ratios, fills at prices nobody gets. So I built
 the thing I wanted to use: a platform where the statistics are honest by
 construction (Deflated Sharpe, purged walk-forward CV, `shift(1)` everywhere),
 where my friends and I can trade the same shared portfolio and argue about it
-in the chat, and where the whole stack — FastAPI, Postgres, Next.js, WebSockets. The free-tier constraint turned out to be
-the most interesting engineering problem in the repo: no Celery, no Redis, no
-managed extensions, one process doing the work of five.
+in the chat, and where the whole stack — FastAPI, Postgres, Next.js,
+WebSockets — runs on **$0.00/month of cloud**. The free-tier constraint
+turned out to be the most interesting engineering problem in the repo: no
+Celery, no Redis, no managed extensions, one process doing the work of five.
 
 Write strategies (or bring your own Python), backtest them on real historical
 prices with honest statistics, paper-trade live-ish prices inside **shared**
@@ -80,7 +82,7 @@ under curated builtins with a memory rlimit and a hard wall-clock kill, and
 output is clipped to the weight contract. The engine's `shift(1)` applies to
 user code too — lookahead is structurally impossible.
 
-**4 ·ML.** Seven model families (logistic → XGBoost)
+**4 · ML.** Seven model families (logistic → XGBoost)
 behind one leakage-hardened pipeline: purged + embargoed walk-forward CV
 (purge ≥ label horizon), isotonic calibration fit inside the training fold,
 a logistic baseline on every fold, Brier scores, and triple-barrier
