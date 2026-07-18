@@ -1,18 +1,16 @@
 """WebSocket hub — the browser-facing real-time fan-out layer.
 
-Bridges Redis pub/sub (fed by the stream adapters + the portfolio ledger)
-to authenticated browser WebSocket connections, with per-connection
+Bridges the in-process bus (fed by order fills, chat, and presence) to
+authenticated browser WebSocket connections, with per-connection
 subscription filtering so a client only receives the channels it asked for.
 
 Architecture / scaling contract:
-  * Each FastAPI process runs ONE ConnectionManager with ONE Redis pubsub.
-  * The pubsub psubscribes to broad patterns (tick:*, bar:*, depth:*,
-    portfolio:*) ONCE at startup and the reader loop owns it exclusively.
-    Per-client filtering is in-memory (never dynamic (p)subscribe — redis-py's
-    async PubSub deadlocks if you subscribe while listen() reads).
-  * Fan-out rides Redis, so the ingest process (or order handler) is decoupled
-    from the process holding the browser socket — the web tier scales out
-    without sticky sessions.
+  * One ConnectionManager per process; the bus binds `_deliver` at startup
+    and calls it on the event loop for every published message.
+  * Per-client filtering is in-memory and exact-match. Publishers and the
+    hub share one process, so there is no broker between them — scaling out
+    horizontally would mean putting one back (only `_deliver`'s caller
+    changes; the socket/backpressure layer below stays as-is).
 
 Slow-consumer safety (the backpressure fix):
   * Each socket has a `_Sender` with a bounded, CONFLATING outbound buffer.
@@ -40,8 +38,6 @@ import uuid
 from collections import defaultdict, deque
 
 from fastapi import WebSocket
-
-from app.core.metrics import WS_CLIENTS, WS_CONFLATED, WS_OVERFLOW_DISCONNECTS
 
 logger = logging.getLogger("streaming.hub")
 
@@ -77,12 +73,8 @@ class _Sender:
 
     def offer(self, channel: str, frame: str) -> None:
         if _is_conflatable(channel):
-            if channel in self._conflated:     # an undelivered frame is replaced
-                WS_CONFLATED.labels(channel.split(":", 1)[0]).inc()
             self._conflated[channel] = frame   # overwrite: keep only latest
         elif len(self._must) >= _MUST_DELIVER_MAX:
-            if not self.overflowed:            # count the client once, not per frame
-                WS_OVERFLOW_DISCONNECTS.inc()
             self.overflowed = True             # can't keep up with must-deliver
         else:
             self._must.append(frame)
@@ -164,7 +156,6 @@ class ConnectionManager:
         sender = _Sender(ws)
         self._senders[ws] = sender
         self._sender_tasks[ws] = asyncio.create_task(sender.run(), name="ws-sender")
-        WS_CLIENTS.inc()
 
     async def disconnect(self, ws: WebSocket) -> None:
         async with self._lock:
@@ -179,7 +170,6 @@ class ConnectionManager:
         sender = self._senders.pop(ws, None)
         if sender:
             sender.closed = True
-            WS_CLIENTS.dec()   # paired with connect(); pop guards double-dec
         task = self._sender_tasks.pop(ws, None)
         if task:
             task.cancel()

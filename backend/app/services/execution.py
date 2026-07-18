@@ -7,17 +7,19 @@ portfolio's shared cash balance. Its correctness contract:
      portfolios row, so concurrent orders on the SAME portfolio serialize;
      orders on DIFFERENT portfolios never contend.
   2. Validate against the LOCKED balance — a buy (opening a long OR buying a
-     short back) needs cash; a sell may open/extend a short. Insufficient
-     buying power => the order is recorded as REJECTED and committed (audit
-     trail), not silently dropped, and the caller learns why.
+     short back) needs buying power (cash + margin headroom under
+     MAX_LEVERAGE); a sell may open/extend a short, charged initial margin.
+     Insufficient buying power => the order is recorded as REJECTED and
+     committed (audit trail), not silently dropped, and the caller learns why.
   3. On fill: write order(filled) + trade + signed position upsert + signed
      ledger entry (with balance_after) + bump portfolios.version, all in
-     the same transaction. The CHECK (cash_balance >= 0) constraint is the
-     last-resort backstop.
+     the same transaction. With margin on, cash may legitimately go negative —
+     the buying-power check under this lock IS the double-spend backstop
+     (the old cash >= 0 CHECK was dropped with migration 0011).
   4. Return a result the caller publishes to portfolio:{id} AFTER commit.
 
 Everything here is synchronous SQLAlchemy; the FastAPI route runs it in a
-worker thread and does the Redis publish once it returns.
+worker thread and does the bus publish once it returns.
 """
 from __future__ import annotations
 
@@ -52,7 +54,7 @@ class ExecutionResult:
     cash_balance: Decimal
     version: int
     # Set on fills: the outbox row committed with the ledger entry (the route
-    # marks it published after the fast-path Redis publish succeeds) and the
+    # marks it published after the fast-path bus publish succeeds) and the
     # exact payload it holds — publish THIS, so fast path and relay emit
     # byte-identical events.
     outbox_id: int | None = None
@@ -334,9 +336,9 @@ def execute_market_order(
     order.filled_at = trade.executed_at
 
     # (3c) Transactional outbox: the fill event commits WITH the ledger entry,
-    # so a crash between commit and the route's Redis publish can never lose
-    # it — the beat relay re-publishes any row still unmarked. Built before
-    # commit so it snapshots the exact post-fill state.
+    # so a crash between commit and the route's bus publish can never lose
+    # it — the scheduled relay re-publishes any row still unmarked. Built
+    # before commit so it snapshots the exact post-fill state.
     result = ExecutionResult(order.id, OrderStatus.FILLED, None, price, qty,
                              portfolio.cash_balance, portfolio.version)
     from app.models import OutboxEvent, User

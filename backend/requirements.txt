@@ -27,9 +27,6 @@ scikit-learn>=1.4
 xgboost>=2.0
 
 
-# Phase 3 — observability
-prometheus-client>=0.20
-
 # Indicator engine (150+ TA indicators via IndicatorService)
 pandas-ta>=0.4.71b0
 

@@ -50,19 +50,16 @@ class Settings(BaseSettings):
     SHORT_MARGIN_REQUIREMENT: float = 1.5
 
     # Backtesting
-    # Per-job ADDRESS-SPACE ceiling (RLIMIT_AS, Linux only). Address space is
-    # much larger than RSS — xgboost alone fails to mmap libxgboost.so under
-    # 1GB — so this is a runaway-job bound, not a working-set budget.
-    BACKTEST_MEMORY_CAP_MB: int = 4096
-    # Wall-clock kill switch for a single backtest task. This is what stops an
-    # infinite loop in BYOC user code: prefork SIGKILLs the child at the hard
-    # limit and records the task failed. Memory caps can't catch a tight loop.
+    # Wall-clock budget for a single backtest task. In-process BackgroundTasks
+    # can't SIGKILL a runaway job, so this bounds the reaper instead: any row
+    # RUNNING past limit + grace is marked FAILED (no honest job runs longer).
     BACKTEST_TIME_LIMIT_S: int = 600
     BACKTEST_RISK_FREE_RATE: float = 0.0  # annual, for Sharpe/Sortino
     BACKTEST_DEFAULT_TRIALS: int = 1      # strategy variants tried, for Deflated Sharpe
-    # Admission control: max ESTIMATED working set a job may claim. A policy
-    # cap far under the RLIMIT_AS backstop — reject in milliseconds at submit
-    # with an actionable 422 instead of OOM-killing after minutes in the worker.
+    # Admission control: max ESTIMATED working set a job may claim. In
+    # single-process mode this is the memory guard (a per-job rlimit would cap
+    # the whole web process) — reject in milliseconds at submit with an
+    # actionable 422 instead of OOMing the API minutes later.
     BACKTEST_MAX_WORKING_SET_MB: int = 1024
 
     # WS hub heartbeat: clients treat ~3 missed beats as a dead link (show the

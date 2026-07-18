@@ -1,9 +1,9 @@
-"""Cross-cutting HTTP middleware: request IDs, structured access logging, and a
-Redis-backed fixed-window rate limiter.
+"""Cross-cutting HTTP middleware: request IDs, structured access logging, and an
+in-memory fixed-window rate limiter.
 
 Why here (not per-route): these are infra concerns that must wrap *every* request
-uniformly. The rate limiter degrades open — if Redis is unreachable it lets the
-request through rather than taking the API down with the cache.
+uniformly. The rate limiter degrades open — any failure in the limiter itself lets
+the request through rather than taking the API down with it.
 """
 from __future__ import annotations
 
@@ -15,24 +15,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from app.core.metrics import HTTP_LATENCY, HTTP_REQUESTS
-
 logger = logging.getLogger("backtester.access")
 
 
-def _route_template(request: Request) -> str:
-    """The matched route's path TEMPLATE (e.g. /backtests/{backtest_id}) —
-    set on the scope by the router during call_next. Falls back to a single
-    bucket for unmatched paths so 404 scans can't explode label cardinality."""
-    route = request.scope.get("route")
-    return getattr(route, "path", None) or "unmatched"
-
-
 class RequestContextMiddleware(BaseHTTPMiddleware):
-    """Assigns each request an ID, emits one structured access log line, and
-    records Prometheus count/latency with method, route template, and status.
-    The ID is echoed in `X-Request-ID` so a client error can be traced to a
-    single server log line."""
+    """Assigns each request an ID and emits one structured access log line. The
+    ID is echoed in `X-Request-ID` so a client error can be traced to a single
+    server log line."""
 
     async def dispatch(self, request: Request, call_next) -> Response:
         request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:16]
@@ -42,8 +31,6 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
         except Exception:
             elapsed = time.perf_counter() - start
-            HTTP_REQUESTS.labels(request.method, _route_template(request), "500").inc()
-            HTTP_LATENCY.labels(request.method, _route_template(request)).observe(elapsed)
             logger.exception(
                 "request_failed",
                 extra={"request_id": request_id, "method": request.method,
@@ -51,9 +38,6 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             )
             raise
         elapsed = time.perf_counter() - start
-        route = _route_template(request)
-        HTTP_REQUESTS.labels(request.method, route, str(response.status_code)).inc()
-        HTTP_LATENCY.labels(request.method, route).observe(elapsed)
         response.headers["X-Request-ID"] = request_id
         logger.info(
             "%s %s %s %.1fms",
@@ -73,9 +57,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     lazily so the map can't grow without bound.
     """
 
-    # Paths that must never be rate limited (liveness probes, Prometheus
-    # scrapes, WS upgrade).
-    EXEMPT_PREFIXES = ("/health", "/metrics", "/ws", "/docs", "/openapi.json", "/redoc")
+    # Paths that must never be rate limited (liveness probe, WS upgrade, docs).
+    EXEMPT_PREFIXES = ("/health", "/ws", "/docs", "/openapi.json", "/redoc")
 
     def __init__(self, app, limit: int = 120, window_seconds: int = 60):
         super().__init__(app)

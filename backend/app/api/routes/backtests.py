@@ -1,7 +1,7 @@
 """Strategy + backtest routes.
 
 Flow: create a Strategy (-> auto v1 StrategyVersion) -> submit a Backtest
-(queued row + dispatched Celery task) -> poll the backtest + its yearly
+(queued row + BackgroundTasks dispatch) -> poll the backtest + its yearly
 breakdown. Built-in strategies need no code; the `strategy` key in the
 backtest config selects the engine strategy.
 """
@@ -163,8 +163,8 @@ def submit_backtest(body: BacktestCreate, background: BackgroundTasks,
                                 f"custom strategy rejected: {exc}") from exc
     # Admission control: estimate the job's working set from a chunk-excluded
     # COUNT (ms post-0008) and reject over-budget jobs NOW with an actionable
-    # message — not after minutes of queue time ending in an opaque OOM kill.
-    # RLIMIT_AS in the worker remains the backstop; this is the policy.
+    # message — not minutes later as an opaque OOM. In single-process mode
+    # this is the memory guard (a per-job rlimit would cap the whole process).
     est_mb = _estimate_working_set_mb(db, body)
     if est_mb > settings.BACKTEST_MAX_WORKING_SET_MB:
         raise HTTPException(

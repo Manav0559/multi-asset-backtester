@@ -15,9 +15,9 @@ jobs:
     name: Backend tests
     runs-on: ubuntu-latest
 
-    # Match the dev host ports (5433 / 6380) so the app's default DATABASE_URL /
-    # REDIS_URL work with no override. TimescaleDB image because migration 0001
-    # creates the ohlcv_bars hypertable + timescaledb extension.
+    # Match the dev host port (5433) so the app's default DATABASE_URL works
+    # with no override. TimescaleDB image to mirror the dev compose db; the
+    # migrations guard the Timescale DDL, so vanilla Postgres also passes.
     services:
       db:
         image: timescale/timescaledb:latest-pg16
@@ -32,21 +32,9 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-      redis:
-        image: redis:7-alpine
-        ports:
-          - "6380:6379"
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
 
     env:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5433/backtester
-      REDIS_URL: redis://localhost:6380/0
-      CELERY_BROKER_URL: redis://localhost:6380/1
-      CELERY_RESULT_BACKEND: redis://localhost:6380/2
 
     steps:
       - uses: actions/checkout@v4

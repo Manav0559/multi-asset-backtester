@@ -9,7 +9,8 @@ from app.models.enums import Timeframe
 
 
 class OhlcvBar(Base):
-    """Historical + streamed OHLCV bars. TimescaleDB hypertable.
+    """Historical + streamed OHLCV bars. Hypertable where TimescaleDB is
+    installed; plain table on vanilla Postgres (the migration guards the DDL).
 
     Hypertable config (applied in the Alembic migration, not here):
       - time partitioning on `time`, chunk_time_interval = 1 day
@@ -22,8 +23,8 @@ class OhlcvBar(Base):
     The composite PK deliberately puts `time` LAST so the underlying
     btree serves (asset, timeframe) time-range scans optimally — including
     `ORDER BY time DESC` hot paths, since btrees scan backwards — and it
-    includes both partitioning columns as TimescaleDB requires. No extra
-    secondary index is needed on this table.
+    includes both partitioning columns as the hypertable path requires. No
+    extra secondary index is needed on this table.
     """
 
     __tablename__ = "ohlcv_bars"

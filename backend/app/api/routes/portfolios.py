@@ -132,7 +132,7 @@ def list_members(portfolio_id: uuid.UUID,
 def list_presence(portfolio_id: uuid.UUID,
                   member: PortfolioMember = Depends(require_portfolio_role(PortfolioRole.VIEWER)),
                   db: Session = Depends(get_db)) -> list[dict]:
-    """Who's online in this room right now (Redis TTL-expired presence set),
+    """Who's online in this room right now (TTL-pruned in-memory presence),
     resolved to usernames for avatars."""
     from app.services.presence import online_members
     ids = online_members(portfolio_id)

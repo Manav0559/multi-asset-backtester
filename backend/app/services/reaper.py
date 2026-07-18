@@ -1,12 +1,12 @@
 """Reap dead backtest jobs.
 
-A backtest row goes RUNNING when the worker picks it up and COMPLETED/FAILED
-when it finishes. But a hard kill — cgroup OOM (SIGKILL), a crashed container,
-`kill -9` — runs no except-path, so the row is orphaned in RUNNING forever.
-`task_acks_late` requeues an in-flight message, but the *row* still needs
-healing. This sweep is the backstop: any RUNNING row older than the task time
-limit plus a grace margin is marked FAILED, because no honest job runs that
-long (the hard time limit would have killed it first).
+A backtest row goes RUNNING when the background task picks it up and
+COMPLETED/FAILED when it finishes. But a hard kill — cgroup OOM (SIGKILL), a
+crashed container, `kill -9` — runs no except-path, so the row is orphaned in
+RUNNING forever. This sweep is the backstop: any RUNNING row older than the
+task time budget plus a grace margin is marked FAILED, because no honest job
+runs that long. In single-process mode this is also the only enforcement of
+BACKTEST_TIME_LIMIT_S — BackgroundTasks has nothing to SIGKILL.
 """
 from __future__ import annotations
 

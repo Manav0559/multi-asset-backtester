@@ -1,16 +1,15 @@
 """Negative-path coverage — the failure modes live verification kept finding.
 
 What production taught us, pinned as tests:
-  - Worker down: submission must still 202 and the row must sit QUEUED —
-    the API never blocks on (or silently loses) a backtest.
+  - Runner unavailable: submission must still 202 and the row must sit
+    QUEUED — the API never blocks on (or silently loses) a backtest.
   - Order rejection: bad orders come back `rejected` with a reason over HTTP
     and leave the shared cash balance untouched (service-level variants live
     in test_portfolio_ledger; this is the API contract).
-  - Runaway BYOC code: an infinite loop is unkillable by memory caps —
-    RLIMIT_AS bounds address space, not time. The Celery hard time limit is
-    the kill switch (prefork SIGKILLs the child; run_and_persist's except
-    path marks the row FAILED). Asserted at config level because actually
-    running a 10-minute loop in CI buys nothing extra.
+  - Runaway BYOC code: memory caps can't stop a tight loop, so the sandbox
+    denies the amplification primitives outright and the reaper fails any
+    run past BACKTEST_TIME_LIMIT_S (see test_reaper). Actually running a
+    10-minute loop in CI buys nothing extra.
   - Leaderboard with zero (old) snapshots: windowed returns must degrade to
     the all-time baseline, never error or rank on NULL.
 """
