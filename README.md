@@ -6,10 +6,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 ![Tests](https://img.shields.io/badge/tests-181%20passing-brightgreen)
 
-**🔴 Live demo: [multi-asset-backtester.vercel.app](https://multi-asset-backtester.vercel.app)** —
-log in as `alice@demo.backtester.dev` / `demo-pass-123`
-(API: [backtester-x37r.onrender.com](https://backtester-x37r.onrender.com/docs); free-tier
-backend sleeps when idle, so the first request can take ~30–60s to wake).
+** Live demo: [multi-asset-backtester.vercel.app](https://multi-asset-backtester.vercel.app)**
+(API: [backtester-x37r.onrender.com](https://backtester-x37r.onrender.com/docs);
 
 ## Why I built this
 
@@ -21,8 +19,7 @@ features, cherry-picked Sharpe ratios, fills at prices nobody gets. So I built
 the thing I wanted to use: a platform where the statistics are honest by
 construction (Deflated Sharpe, purged walk-forward CV, `shift(1)` everywhere),
 where my friends and I can trade the same shared portfolio and argue about it
-in the chat, and where the whole stack — FastAPI, Postgres, Next.js, WebSockets
-— runs on **$0.00/month of cloud**. The free-tier constraint turned out to be
+in the chat, and where the whole stack — FastAPI, Postgres, Next.js, WebSockets. The free-tier constraint turned out to be
 the most interesting engineering problem in the repo: no Celery, no Redis, no
 managed extensions, one process doing the work of five.
 
@@ -41,28 +38,21 @@ competitions.
 | ![Consent-based head-to-head competition](screenshots/06-compete.png) | ![Live Binance order book and trade tape](screenshots/07-orderbook.png) |
 | ![Categorized searchable strategy picker](screenshots/08-picker.png) | ![Inline ML honesty warning](screenshots/09-ml-honesty.png) |
 
-> Screenshots are generated, not hand-taken: `./scripts/demo.sh` then
-> `cd frontend && node scripts/capture-screenshots.mjs` re-captures all of them
-> against the seeded stack (headless system Chrome via Playwright).
 
 ---
 
 ## Live deployment
 
-The platform runs in production on a **$0.00/month** stack:
-
 - **Frontend** — [multi-asset-backtester.vercel.app](https://multi-asset-backtester.vercel.app) (Vercel)
 - **Backend API** — [backtester-x37r.onrender.com](https://backtester-x37r.onrender.com/docs) (Render, single FastAPI process)
 - **Database** — Neon serverless Postgres
 
-Log in as `alice@demo.backtester.dev` / `demo-pass-123` — the database is
+The database is
 seeded with real market history, demo portfolios with open positions, completed
 backtests of every strategy family, and an active head-to-head competition.
 The free-tier backend hibernates when idle; the first request after a quiet
 spell takes ~30–60s to wake, then everything is fast.
 
-To run the same thing locally instead: `./scripts/demo.sh` builds the compose
-stack, backfills real price history, and seeds the same demo data.
 
 ---
 
@@ -90,7 +80,7 @@ under curated builtins with a memory rlimit and a hard wall-clock kill, and
 output is clipped to the weight contract. The engine's `shift(1)` applies to
 user code too — lookahead is structurally impossible.
 
-**4 · Honest ML, not demo ML.** Seven model families (logistic → XGBoost)
+**4 ·ML.** Seven model families (logistic → XGBoost)
 behind one leakage-hardened pipeline: purged + embargoed walk-forward CV
 (purge ≥ label horizon), isotonic calibration fit inside the training fold,
 a logistic baseline on every fold, Brier scores, and triple-barrier
