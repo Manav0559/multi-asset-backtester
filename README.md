@@ -110,6 +110,21 @@ trades, or strategy. Enforced server-side by a whitelisted schema (a snapshot
 test fails loudly if a field is ever added). Results freeze at the end of the
 window and stay immutable as portfolios keep trading.
 
+**8 · Robustness Certificates.** A single backtest Sharpe answers "did this
+work on the one history that actually happened" — `app/backtest/robustness.py`
+answers the harder question: how much realistic market stress the edge
+survives before it stops looking real. It resamples the asset's own return
+history in contiguous blocks (preserving volatility clustering, unlike an
+i.i.d. shuffle) and layers on bounded jump shocks sized in units of the
+asset's own daily volatility, re-running the *same* `run_backtest` engine
+every other backtest uses at each stress level, and reports the minimal
+stress at which Deflated Sharpe drops below 0.5 — the point it becomes more
+likely than not there's no real edge (DSR is a probability; it cannot
+literally "cross zero" the way a raw Sharpe can). Single-machine, in-process
+today; distributing the scenario sweep and adding an LLM-proposed search
+prior are documented next steps, not implemented — see the module's own
+docstring for exactly what's covered.
+
 **Plus the platform underneath:** multiplayer portfolios sharing ONE cash
 balance (row-locked, idempotent fills, WebSocket-synced), a transactional
 outbox so fill events survive crashes, periodic equity snapshots backing the
