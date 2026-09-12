@@ -79,8 +79,18 @@ frontend, which hardcodes nothing.
 `self.indicator("rsi", length=14)`); an AST allowlist rejects imports, dunder
 access, and exec/eval **with line numbers, at submission time**; execution runs
 under curated builtins with a memory rlimit and a hard wall-clock kill, and
-output is clipped to the weight contract. The engine's `shift(1)` applies to
-user code too — lookahead is structurally impossible.
+output is clipped to the weight contract. The engine's `shift(1)` on the
+strategy's *output* stops the obvious mistake — trading on today's own
+close — but says nothing about a precomputed series built in `setup()`
+that already peeked at a future bar internally. **LeakGuard**
+(`app/backtest/leakguard.py`) closes that gap with a static pass over the
+submitted code — the same AST-allowlist gate, at the same submission time —
+that rejects the well-known lookahead footguns a shift-the-output guarantee
+can't see: a negative `.shift(-N)`, a centered `.rolling(..., center=True)`,
+a `bfill()`/`fillna(method="bfill")`, or `next(i, bar)` indexing `i + k`
+bars ahead. It's a finite, provable pattern set, not a general proof of
+absence — see the module's own docstring for exactly what it does and
+doesn't catch.
 
 **4 · ML.** Seven model families (logistic → XGBoost)
 behind one leakage-hardened pipeline: purged + embargoed walk-forward CV

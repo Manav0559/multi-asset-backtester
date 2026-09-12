@@ -41,6 +41,7 @@ import numpy as np
 import pandas as pd
 
 from app.backtest.base import BaseStrategy
+from app.backtest.leakguard import detect_lookahead
 from app.indicators import IndicatorService, IndicatorSpec
 
 MAX_CODE_BYTES = 64 * 1024
@@ -155,7 +156,16 @@ class _Validator(ast.NodeVisitor):
 
 
 def validate_code(source: str) -> list[str]:
-    """Static errors in user code; empty list means it passed the gate."""
+    """Static errors in user code; empty list means it passed the gate.
+
+    Two independent passes, merged into one error list: the security
+    allowlist above (`_Validator`) and LeakGuard's lookahead-bias pattern
+    detector (`app.backtest.leakguard`) — different concerns (what the code
+    is allowed to do at all, vs. whether what it does is causally honest),
+    kept in separate modules, but surfaced through this one existing gate so
+    every caller (the `/strategies/validate` endpoint and
+    `build_custom_strategy` below) gets both for free.
+    """
     if len(source.encode()) > MAX_CODE_BYTES:
         return [f"source exceeds {MAX_CODE_BYTES // 1024}KB"]
     try:
@@ -164,7 +174,7 @@ def validate_code(source: str) -> list[str]:
         return [f"line {exc.lineno}: {exc.msg}"]
     v = _Validator()
     v.visit(tree)
-    return v.errors
+    return v.errors + detect_lookahead(source)
 
 
 def build_custom_strategy(source: str, params: dict | None = None) -> CustomStrategy:
