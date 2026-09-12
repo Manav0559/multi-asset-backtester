@@ -7,8 +7,9 @@
 ![Tests](https://img.shields.io/badge/tests-181%20passing-brightgreen)
 
 **🔴 Live demo: [multi-asset-backtester.vercel.app](https://multi-asset-backtester.vercel.app)**
-(API: [backtester-x37r.onrender.com](https://backtester-x37r.onrender.com/docs); the free-tier
-backend sleeps when idle, so the first request can take ~30–60s to wake.)
+(API: [backtester-x37r.onrender.com](https://backtester-x37r.onrender.com/docs); kept warm
+24/7 by a [scheduled health-check heartbeat](.github/workflows/keep-alive.yml) every 10
+minutes — still a free-tier Render service underneath, just never left to sleep.)
 
 ## Why I built this
 
@@ -52,8 +53,11 @@ competitions.
 The database is
 seeded with real market history, demo portfolios with open positions, completed
 backtests of every strategy family, and an active head-to-head competition.
-The free-tier backend hibernates when idle; the first request after a quiet
-spell takes ~30–60s to wake, then everything is fast.
+A [GitHub Actions heartbeat](.github/workflows/keep-alive.yml) pings `/health`
+(a real `SELECT 1` through the DB, not just a liveness check) every 10 minutes —
+comfortably inside Render's ~15-minute idle-sleep window — so the free-tier
+backend and the Neon compute behind it both stay warm; a visitor should not see
+the cold-start delay this used to require.
 
 
 ---

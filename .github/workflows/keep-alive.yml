@@ -1,0 +1,51 @@
+name: Keep backend warm
+
+# Render's free web-service plan (see render.yaml: "Portfolio Showcase Mode")
+# hibernates the single FastAPI process after ~15 minutes with no inbound
+# traffic, and Render's own healthCheckPath probe does NOT count as traffic
+# that resets that idle timer (it's a deploy-health gate, not a keep-alive) --
+# hence the ~30-60s cold start the README used to document as an accepted
+# tradeoff. This workflow is real, external traffic every 10 minutes,
+# comfortably inside that 15-minute window, so the service (and the Neon
+# Postgres compute behind it -- see below) never actually goes idle.
+#
+# Deliberately hits /health, not /docs or /: main.py's health() executes a
+# real `SELECT 1` through the SQLAlchemy engine, so one ping keeps BOTH the
+# Render dyno warm AND the Neon serverless Postgres compute awake (Neon
+# autosuspends its own compute after inactivity, independent of Render) --
+# pinging a route that never touches the DB would still leave every first
+# real request paying Neon's own cold-start on top of an otherwise-warm API.
+#
+# Known limitation, not hidden: GitHub auto-disables scheduled workflows on a
+# repo with no commits for 60 days. A repo this actively developed is
+# unlikely to sit untouched that long, but it is a real gap this workflow
+# cannot close by itself -- an external monitor (e.g. UptimeRobot, free tier,
+# self-service signup) is the standard belt-and-suspenders complement if that
+# matters for a given deploy. True zero-cold-start-ever, immune to both of
+# these gaps, means Render's paid Starter plan -- a cost/billing decision,
+# not something this workflow can substitute for.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health (retry through a cold start, since the first ping after a real sleep can itself take ~30-60s)
+        run: |
+          for attempt in 1 2 3; do
+            echo "=== attempt $attempt/3 ==="
+            code=$(curl -s -o /tmp/health_body.json -w "%{http_code}" --max-time 75 https://backtester-x37r.onrender.com/health || echo "000")
+            echo "HTTP $code"
+            if [ "$code" = "200" ]; then
+              cat /tmp/health_body.json
+              echo
+              exit 0
+            fi
+            echo "attempt $attempt failed; retrying"
+            sleep 5
+          done
+          echo "backend did not return 200 after 3 attempts -- see run logs"
+          exit 1
