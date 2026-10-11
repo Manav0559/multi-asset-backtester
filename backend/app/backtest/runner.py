@@ -253,17 +253,24 @@ def _execute_single_asset(cfg: dict):
     params = cfg.get("params", {})
     if cfg["strategy"] == "custom_code":
         from app.backtest.sandbox import (
-            SandboxError,
-            build_custom_strategy,
-            run_custom_strategy,
+            custom_strategies_enabled,
+            run_custom_strategy_isolated,
+            validate_code,
         )
-        try:
-            custom = build_custom_strategy(cfg.get("code", ""), params)
-        except SandboxError as exc:
-            raise BacktestConfigError(f"custom strategy rejected: {exc}") from exc
-        strategy = lambda _df: run_custom_strategy(custom, _df)  # noqa: E731
-        diagnostics = {"custom_class": type(custom).__name__,
-                       "code_bytes": len(cfg.get("code", "").encode())}
+        if not custom_strategies_enabled():
+            raise BacktestConfigError("custom strategies are disabled on this deployment")
+        code = cfg.get("code") or ""
+        errors = validate_code(code)
+        if errors:
+            raise BacktestConfigError(f"custom strategy rejected: {'; '.join(errors)}")
+        diagnostics = {"custom_class": None, "code_bytes": len(code.encode())}
+
+        def strategy(_df, _diag=diagnostics):
+            # User code runs only in the isolated sandbox process (empty env,
+            # rlimits, wall-clock kill); a SandboxError fails this backtest.
+            weights, class_name = run_custom_strategy_isolated(code, params, _df)
+            _diag["custom_class"] = class_name
+            return weights
     elif cfg["strategy"] == "ml_direction" or cfg["strategy"].startswith("ml_"):
         from app.ml.model import MODEL_FAMILIES, run_ml_direction, run_ml_meta
         # `ml_direction` is the xgboost default; `ml_<family>` picks a family;
