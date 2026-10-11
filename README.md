@@ -77,11 +77,12 @@ frontend, which hardcodes nothing.
 **3 · Bring-your-own-code sandbox.** Users submit a Python class
 (`setup()` / `next(i, bar)` / vectorized `generate()`, plus
 `self.indicator("rsi", length=14)`); an AST allowlist rejects imports, dunder
-access, exec/eval, and pandas/numpy file or network functions (`read_*`,
+access, frame introspection, exec/eval, and pandas/numpy file or network functions (`read_*`,
 `to_csv`, `np.load`, `tofile`, ...) **with line numbers, at submission time**.
 User code never runs in the API process: validation and execution each start a
-separate Python process with an empty environment (no database URL, no JWT
-secret), CPU-time / address-space / file-size / process-count rlimits, an
+separate Python process with a minimal environment (no database URL, no JWT
+secret), dropped to an unprivileged user if the server runs as root,
+CPU-time / address-space / file-size / process-count rlimits, an
 audit hook that refuses sockets, subprocesses, file writes and reads outside
 the Python install, and a hard wall-clock timeout that SIGKILLs it. Strategies
 see `pd`/`np` with the I/O functions removed, and output comes back as JSON,
@@ -252,15 +253,16 @@ point-in-time membership — so the report says so instead of pretending.
 - **The BYOC sandbox is defense-in-depth, not a hostile-multitenant jail.**
   What the code does (`backend/app/backtest/sandbox.py`,
   `sandbox_worker.py`): an AST gate and I/O-free `pd`/`np` namespaces in front;
-  then every validate/run happens in a fresh child process with an empty
-  environment, a throwaway working directory, `RLIMIT_CPU` (timeout + 1s),
+  then every validate/run happens in a fresh child process with a minimal
+  environment, a throwaway working directory, an unprivileged uid/gid
+  (`nobody`) when the server runs as root, `RLIMIT_CPU` (timeout + 1s),
   `RLIMIT_AS` (`CUSTOM_STRATEGY_MEMORY_MB`, default 2048), `RLIMIT_FSIZE=0`,
   `RLIMIT_NPROC=0`, no core dumps, a PEP 578 audit hook blocking network,
   process creation, file writes and out-of-tree reads, and a wall-clock kill
   (`CUSTOM_STRATEGY_TIMEOUT_S`, default 60s; `CUSTOM_STRATEGY_VALIDATE_TIMEOUT_S`,
   default 10s). The rlimits are enforced on Linux (the deployed container);
-  macOS accepts but ignores `RLIMIT_AS`. The child still runs as the same OS
-  user in the same container and network namespace, so truly hostile code
+  macOS accepts but ignores `RLIMIT_AS`. The child still shares the web
+  container and its network namespace, so truly hostile code
   would need gVisor/Firecracker — out of scope for this deployment shape. A
   public demo can set `CUSTOM_STRATEGIES_ENABLED=false`.
 - **Rate limiter fails open.** If the limiter breaks, requests pass unmetered —

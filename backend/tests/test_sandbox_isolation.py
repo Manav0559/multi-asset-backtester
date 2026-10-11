@@ -121,6 +121,26 @@ def test_io_entry_points_rejected_before_execution(expr):
         run_custom_strategy_isolated(src, None, _ohlcv(10))
 
 
+@pytest.mark.parametrize("body", [
+    "        def gen():\n            yield g.gi_frame.f_back\n"
+    "        g = gen()\n        x = next(g).f_globals\n",
+    "        x = '{0.gi_frame}'.format((y for y in []))\n",
+    "        x = '{a}'.format_map({'a': 1})\n",
+    "        x = type(self).mro()\n",
+])
+def test_introspection_escapes_rejected_before_execution(body):
+    src = _cls(f"    def generate(self, data):\n{body}"
+               f"        return pd.Series(0.0, index=data.index)\n")
+    errors = validate_code(src)
+    assert any("is not allowed in the sandbox" in e for e in errors), errors
+    with pytest.raises(SandboxError, match="is not allowed in the sandbox"):
+        run_custom_strategy_isolated(src, None, _ohlcv(10))
+
+
+def test_child_never_runs_as_root():
+    assert probe_sandbox()["euid"] != 0
+
+
 def test_restricted_namespaces_have_no_io_functions():
     for name in ("read_csv", "read_pickle", "read_parquet", "read_sql", "read_html",
                  "eval", "io", "api", "plotting", "ExcelWriter", "HDFStore"):

@@ -30,14 +30,16 @@ still shares the web container's user and network stack):
      entirely (registry hides it, validate/submit return 403, runner refuses).
   2. AST allowlist, checked in the web process before anything executes: no
      imports, no dunder/underscore access, no exec/eval/open, no
-     global/nonlocal, and no attribute whose name is a pandas/numpy file or
-     network entry point (read_*, to_csv, np.load, tofile, ...).
+     global/nonlocal, no frame/code/traceback introspection (gi_frame,
+     f_globals, ...) or str.format, and no attribute whose name is a
+     pandas/numpy file or network entry point (read_*, to_csv, np.load, ...).
   3. User code NEVER executes in the web process. `check_custom_strategy` and
      `run_custom_strategy_isolated` start a fresh Python child
-     (app.backtest.sandbox_worker) with an empty environment (no DATABASE_URL,
-     no JWT_SECRET, nothing inherited), a throwaway working directory, and a
+     (app.backtest.sandbox_worker) with a minimal fixed environment (no
+     DATABASE_URL, no JWT_SECRET, nothing inherited), a throwaway working directory, and a
      hard wall-clock timeout after which the whole process group is SIGKILLed.
-  4. Inside the child, before user code runs: RLIMIT_CPU, RLIMIT_AS (memory;
+  4. Inside the child, before user code runs: if started as root (the
+     container default), drop to an unprivileged uid/gid (nobody); then RLIMIT_CPU, RLIMIT_AS (memory;
      enforced on Linux, ignored by macOS), RLIMIT_FSIZE=0, RLIMIT_NPROC=0,
      RLIMIT_CORE=0, plus a PEP 578 audit hook that rejects sockets, process
      creation, file writes, and file reads outside the Python installation.
@@ -95,6 +97,20 @@ _IO_ATTRS = frozenset({
     # pandas I/O namespaces, plotting backends, string evaluation, introspection
     "io", "api", "plotting", "plot", "style", "ExcelWriter", "ExcelFile",
     "HDFStore", "eval", "query", "show_versions", "info", "source",
+})
+
+
+#: frame / code / traceback introspection. These reach the interpreter's
+#: real module globals (and from there os/sys) without any underscore, e.g.
+#: through a generator's frame, so the gate rejects them outright. `format` /
+#: `format_map` are included because str.format can walk attributes from
+#: inside a string literal, out of the AST gate's sight; f-strings still work.
+_INTROSPECTION_ATTRS = frozenset({
+    "gi_frame", "gi_code", "gi_yieldfrom", "cr_frame", "cr_code", "cr_await",
+    "cr_origin", "ag_frame", "ag_code", "ag_await",
+    "f_back", "f_globals", "f_locals", "f_builtins", "f_code", "f_trace",
+    "tb_frame", "tb_next", "with_traceback",
+    "format", "format_map", "mro",
 })
 
 
@@ -226,6 +242,9 @@ class _Validator(ast.NodeVisitor):
         elif _is_io_name(node.attr):
             self._deny(node, f"'{node.attr}' is not available in the sandbox "
                              f"(no file or network I/O)")
+        elif node.attr in _INTROSPECTION_ATTRS:
+            hint = " (use an f-string)" if node.attr.startswith("format") else ""
+            self._deny(node, f"'{node.attr}' is not allowed in the sandbox{hint}")
         self.generic_visit(node)
 
     def visit_Name(self, node):  # noqa: N802

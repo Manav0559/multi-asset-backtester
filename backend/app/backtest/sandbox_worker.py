@@ -72,6 +72,25 @@ def _apply_rlimits(cpu_s: int, memory_mb: int) -> dict:
     return applied
 
 
+#: uid/gid the child drops to when started as root ("nobody" on Debian).
+UNPRIVILEGED_ID = 65534
+
+
+def _drop_privileges() -> int | None:
+    """If running as root (the container default), become an unprivileged
+    user before user code runs. As root RLIMIT_NPROC is not enforced and every
+    root-owned file is readable, so this is what makes those guards real.
+    Returns the uid dropped to, or None if the process was not root."""
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return None
+    os.setgroups([])
+    os.setgid(UNPRIVILEGED_ID)
+    os.setuid(UNPRIVILEGED_ID)
+    if os.geteuid() == 0 or os.getuid() == 0:   # pragma: no cover — must never happen
+        raise SystemExit("sandbox: failed to drop root privileges")
+    return UNPRIVILEGED_ID
+
+
 def _allowed_read_roots(backend_root: str) -> tuple[str, ...]:
     """Directories the child may READ from: the Python installation and
     site-packages (lazy imports, tz data) plus the `app` package source.
@@ -153,6 +172,7 @@ def _probe(applied: dict) -> dict:
     return {
         "ok": True,
         "env": sorted(os.environ),
+        "euid": os.geteuid() if hasattr(os, "geteuid") else None,
         "rlimits_applied": applied,
         "rlimits": limits,
         "checks": {
@@ -178,6 +198,7 @@ def main() -> None:
 
     op = request.get("op")
     limits = request.get("limits") or {}
+    _drop_privileges()
     applied = _apply_rlimits(int(limits.get("cpu_s", 60)), int(limits.get("memory_mb", 2048)))
     _install_audit_hook(_allowed_read_roots(backend_root))
 
