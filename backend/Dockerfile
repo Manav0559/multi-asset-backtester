@@ -19,6 +19,11 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# pandas-ta's @njit(cache=True) kernels write their numba cache next to the
+# package source by default; site-packages is root-owned, so as the app user
+# `import pandas_ta` fails ("no locator available") without a writable dir.
+ENV NUMBA_CACHE_DIR=/tmp/numba_cache
+
 COPY . .
 
 EXPOSE 8000
