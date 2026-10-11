@@ -4,7 +4,6 @@
 ![Python 3.13](https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?logo=typescript&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-![Tests](https://img.shields.io/badge/tests-181%20passing-brightgreen)
 
 **🔴 Live demo: [multi-asset-backtester.vercel.app](https://multi-asset-backtester.vercel.app)**
 (API: [backtester-x37r.onrender.com](https://backtester-x37r.onrender.com/docs); the free-tier
