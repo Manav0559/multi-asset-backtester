@@ -24,18 +24,45 @@ paper-trading hooks and is a documented no-op in backtests. The engine applies
 its usual signal.shift(1), so user code cannot trade on the current bar even
 if it tries.
 
-Defense-in-depth (this is NOT a hostile-multitenant-proof jail — the worker's
-container, memory rlimit, and non-root user are the real fence):
-  1. AST allowlist: no imports, no dunder/underscore access, no exec/eval/open,
-     no global/nonlocal. Rejected before any code object is created.
-  2. exec() under a curated builtins dict — pd/np/math are injected, nothing
-     else is importable.
-  3. Output is validated + clipped to [-1, 1] and reindexed to the data frame.
+Layers (defense-in-depth; this is NOT a hostile-multitenant jail — the child
+still shares the web container's user and network stack):
+  1. Feature flag: settings.CUSTOM_STRATEGIES_ENABLED=false turns BYOC off
+     entirely (registry hides it, validate/submit return 403, runner refuses).
+  2. AST allowlist, checked in the web process before anything executes: no
+     imports, no dunder/underscore access, no exec/eval/open, no
+     global/nonlocal, no frame/code/traceback introspection (gi_frame,
+     f_globals, ...) or str.format, and no attribute whose name is a
+     pandas/numpy file or network entry point (read_*, to_csv, np.load, ...).
+  3. User code NEVER executes in the web process. `check_custom_strategy` and
+     `run_custom_strategy_isolated` start a fresh Python child
+     (app.backtest.sandbox_worker) with a minimal fixed environment (no
+     DATABASE_URL, no JWT_SECRET, nothing inherited), a throwaway working directory, and a
+     hard wall-clock timeout after which the whole process group is SIGKILLed.
+  4. Inside the child, before user code runs: if started as root (the
+     container default), drop to an unprivileged uid/gid (nobody); then RLIMIT_CPU, RLIMIT_AS (memory;
+     enforced on Linux, ignored by macOS), RLIMIT_FSIZE=0, RLIMIT_NPROC=0,
+     RLIMIT_CORE=0, plus a PEP 578 audit hook that rejects sockets, process
+     creation, file writes, and file reads outside the Python installation.
+  5. Code executes under curated builtins with *restricted* pd/np namespaces:
+     the I/O functions are simply not present.
+  6. The child returns plain JSON (never pickle), which the parent validates,
+     re-aligns to the data index and clips to [-1, 1].
 """
 from __future__ import annotations
 
 import ast
+import builtins as _builtins
+import json
+import logging
 import math
+import os
+import pickle
+import signal
+import subprocess
+import sys
+import tempfile
+import types
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -43,7 +70,11 @@ import pandas as pd
 from app.backtest.base import BaseStrategy
 from app.indicators import IndicatorService, IndicatorSpec
 
+logger = logging.getLogger("backtest.sandbox")
+
 MAX_CODE_BYTES = 64 * 1024
+#: cap on error text relayed from the child (user-controlled exception messages)
+MAX_ERROR_CHARS = 2000
 
 _FORBIDDEN_CALLS = {
     "eval", "exec", "compile", "open", "input", "breakpoint", "__import__",
@@ -51,7 +82,41 @@ _FORBIDDEN_CALLS = {
     "exit", "quit", "help",
 }
 
-import builtins as _builtins  # noqa: E402
+#: pandas/numpy members that touch the filesystem/network or evaluate strings.
+#: Rejected as attribute names by the AST gate AND left out of the pd/np
+#: namespaces handed to user code. `read_*` is matched as a prefix.
+_IO_ATTRS = frozenset({
+    # pandas writers
+    "to_csv", "to_excel", "to_json", "to_html", "to_latex", "to_markdown",
+    "to_parquet", "to_feather", "to_orc", "to_pickle", "to_hdf", "to_sql",
+    "to_stata", "to_gbq", "to_clipboard", "to_xml", "to_string",
+    # numpy file I/O + raw-memory escape hatches
+    "load", "loads", "save", "savez", "savez_compressed", "savetxt", "loadtxt",
+    "genfromtxt", "fromfile", "fromregex", "tofile", "dump", "dumps", "memmap",
+    "DataSource", "ctypes", "ctypeslib", "lib", "f2py", "distutils", "testing",
+    # pandas I/O namespaces, plotting backends, string evaluation, introspection
+    "io", "api", "plotting", "plot", "style", "ExcelWriter", "ExcelFile",
+    "HDFStore", "eval", "query", "show_versions", "info", "source",
+})
+
+
+#: frame / code / traceback introspection. These reach the interpreter's
+#: real module globals (and from there os/sys) without any underscore, e.g.
+#: through a generator's frame, so the gate rejects them outright. `format` /
+#: `format_map` are included because str.format can walk attributes from
+#: inside a string literal, out of the AST gate's sight; f-strings still work.
+_INTROSPECTION_ATTRS = frozenset({
+    "gi_frame", "gi_code", "gi_yieldfrom", "cr_frame", "cr_code", "cr_await",
+    "cr_origin", "ag_frame", "ag_code", "ag_await",
+    "f_back", "f_globals", "f_locals", "f_builtins", "f_code", "f_trace",
+    "tb_frame", "tb_next", "with_traceback",
+    "format", "format_map", "mro",
+})
+
+
+def _is_io_name(name: str) -> bool:
+    return name in _IO_ATTRS or name.startswith("read_")
+
 
 _SAFE_BUILTINS = {
     name: getattr(_builtins, name)
@@ -71,8 +136,39 @@ _SAFE_BUILTINS = {
 _SAFE_BUILTINS["__build_class__"] = _builtins.__build_class__
 
 
+def _restricted_module(mod: types.ModuleType, submodules: tuple[str, ...] = ()
+                       ) -> types.SimpleNamespace:
+    """A copy of `mod`'s public surface minus I/O members and submodules
+    (except the explicitly allowed, themselves restricted, `submodules`)."""
+    ns = types.SimpleNamespace()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for name in dir(mod):
+            if name.startswith("_") or _is_io_name(name):
+                continue
+            try:
+                value = getattr(mod, name)
+            except Exception:  # noqa: BLE001 — deprecated/lazy attrs that raise
+                continue
+            if isinstance(value, types.ModuleType):
+                if name not in submodules:
+                    continue
+                value = _restricted_module(value)
+            setattr(ns, name, value)
+    return ns
+
+
+#: what user code sees as `pd` / `np` — no read_*/to_*/load/save/fromfile/...
+SAFE_PD = _restricted_module(pd, submodules=("offsets",))
+SAFE_NP = _restricted_module(np, submodules=("linalg", "random", "fft"))
+
+
 class SandboxError(ValueError):
     """User code rejected or crashed — surfaced verbatim to the submitter."""
+
+
+class SandboxDisabledError(SandboxError):
+    """Custom strategies are switched off on this deployment."""
 
 
 class CustomStrategy(BaseStrategy):
@@ -143,6 +239,12 @@ class _Validator(ast.NodeVisitor):
     def visit_Attribute(self, node):  # noqa: N802
         if node.attr.startswith("_"):
             self._deny(node, f"access to '{node.attr}' is not allowed")
+        elif _is_io_name(node.attr):
+            self._deny(node, f"'{node.attr}' is not available in the sandbox "
+                             f"(no file or network I/O)")
+        elif node.attr in _INTROSPECTION_ATTRS:
+            hint = " (use an f-string)" if node.attr.startswith("format") else ""
+            self._deny(node, f"'{node.attr}' is not allowed in the sandbox{hint}")
         self.generic_visit(node)
 
     def visit_Name(self, node):  # noqa: N802
@@ -155,7 +257,10 @@ class _Validator(ast.NodeVisitor):
 
 
 def validate_code(source: str) -> list[str]:
-    """Static errors in user code; empty list means it passed the gate."""
+    """Static errors in user code; empty list means it passed the gate.
+    Pure AST inspection — safe to call in the web process."""
+    if not isinstance(source, str):
+        return ["code must be a string"]
     if len(source.encode()) > MAX_CODE_BYTES:
         return [f"source exceeds {MAX_CODE_BYTES // 1024}KB"]
     try:
@@ -167,9 +272,12 @@ def validate_code(source: str) -> list[str]:
     return v.errors
 
 
+# --------------------------------------------- in-process primitives -------
+# These EXECUTE user code in the calling process. The web app must never call
+# them directly — they run inside app.backtest.sandbox_worker (and unit tests).
 def build_custom_strategy(source: str, params: dict | None = None) -> CustomStrategy:
     """Validate, exec under restricted globals, and instantiate the single
-    CustomStrategy subclass the user defined."""
+    CustomStrategy subclass the user defined. Runs user code in THIS process."""
     errors = validate_code(source)
     if errors:
         raise SandboxError("; ".join(errors))
@@ -178,7 +286,7 @@ def build_custom_strategy(source: str, params: dict | None = None) -> CustomStra
         "__builtins__": _SAFE_BUILTINS,
         "__name__": "user_strategy",   # class creation reads the module name
         "CustomStrategy": CustomStrategy,
-        "pd": pd, "np": np, "math": math,
+        "pd": SAFE_PD, "np": SAFE_NP, "math": math,
     }
     try:
         exec(compile(source, "<user_strategy>", "exec"), namespace)  # noqa: S102
@@ -197,7 +305,8 @@ def build_custom_strategy(source: str, params: dict | None = None) -> CustomStra
 
 
 def run_custom_strategy(strategy: CustomStrategy, data: pd.DataFrame) -> pd.Series:
-    """Execute + validate output: a numeric Series aligned to data, in [-1, 1]."""
+    """Execute + validate output: a numeric Series aligned to data, in [-1, 1].
+    Runs user code in THIS process."""
     try:
         out = strategy.generate(data)
     except SandboxError:
@@ -208,6 +317,148 @@ def run_custom_strategy(strategy: CustomStrategy, data: pd.DataFrame) -> pd.Seri
         raise SandboxError(f"generate() must return a pandas Series, got {type(out).__name__}")
     out = pd.to_numeric(out, errors="coerce").reindex(data.index).fillna(0.0)
     return out.clip(-1.0, 1.0)
+
+
+# ------------------------------------------------- isolated execution ------
+#: backend/ — the child puts this on sys.path to import the `app` package
+_BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_WORKER_BOOTSTRAP = ("import sys; sys.path.insert(0, sys.argv[1]); "
+                     "from app.backtest.sandbox_worker import main; main()")
+
+
+def custom_strategies_enabled() -> bool:
+    from app.core.config import settings
+    return bool(settings.CUSTOM_STRATEGIES_ENABLED)
+
+
+def _require_enabled() -> None:
+    if not custom_strategies_enabled():
+        raise SandboxDisabledError("custom strategies are disabled on this deployment")
+
+
+def child_env(home: str) -> dict[str, str]:
+    """The child's ENTIRE environment. Nothing is inherited from the web
+    process, so DATABASE_URL / JWT_SECRET / POSTGRES_* never reach user code."""
+    return {
+        "PATH": "/usr/bin:/bin",
+        "HOME": home,
+        "TMPDIR": home,
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TZ": "UTC",
+        # single-threaded numeric libs: no thread pools to account for under
+        # RLIMIT_NPROC / RLIMIT_AS, and predictable CPU accounting
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "NUMEXPR_MAX_THREADS": "1",
+        "NUMBA_NUM_THREADS": "1",
+    }
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+
+
+def _run_worker(request: dict, timeout_s: float) -> dict:
+    """Run one request in a fresh sandbox child; return its parsed JSON reply.
+    Raises SandboxError on timeout, crash, or a malformed/negative reply."""
+    from app.core.config import settings
+
+    request = {**request, "limits": {
+        "cpu_s": int(math.ceil(timeout_s)) + 1,
+        "memory_mb": int(settings.CUSTOM_STRATEGY_MEMORY_MB),
+    }}
+    payload = pickle.dumps(request, protocol=pickle.HIGHEST_PROTOCOL)
+    with tempfile.TemporaryDirectory(prefix="byoc-") as home:
+        try:
+            proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell
+                [sys.executable, "-I", "-B", "-c", _WORKER_BOOTSTRAP, _BACKEND_ROOT],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                cwd=home, env=child_env(home), close_fds=True,
+                start_new_session=True,   # own process group -> killpg on timeout
+            )
+        except OSError as exc:
+            raise SandboxError(f"could not start the strategy sandbox: {exc}") from exc
+        try:
+            out, err = proc.communicate(payload, timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            proc.communicate()
+            raise SandboxError(
+                f"strategy exceeded the {timeout_s:g}s time limit and was stopped") from None
+        except BaseException:
+            _kill_group(proc)
+            proc.communicate()
+            raise
+
+    reply = None
+    lines = out.strip().splitlines()
+    if lines:
+        try:
+            reply = json.loads(lines[-1])
+        except ValueError:
+            reply = None
+    if not isinstance(reply, dict):
+        rc = proc.returncode
+        if rc in (-signal.SIGXCPU, -signal.SIGKILL):
+            raise SandboxError("strategy exceeded its CPU time limit and was stopped")
+        logger.warning("sandbox worker exited rc=%s without a reply; stderr tail: %s",
+                       rc, err[-MAX_ERROR_CHARS:].decode(errors="replace"))
+        raise SandboxError(f"strategy sandbox exited unexpectedly (exit code {rc})")
+    if not reply.get("ok"):
+        raise SandboxError(str(reply.get("error") or "unknown sandbox error")[:MAX_ERROR_CHARS])
+    return reply
+
+
+def check_custom_strategy(source: str, params: dict | None = None) -> str:
+    """Static gate, then define + instantiate the class in a sandbox child
+    (class bodies are code too). Returns the user's class name."""
+    from app.core.config import settings
+
+    _require_enabled()
+    errors = validate_code(source)
+    if errors:
+        raise SandboxError("; ".join(errors))
+    reply = _run_worker({"op": "check", "source": source, "params": dict(params or {})},
+                        float(settings.CUSTOM_STRATEGY_VALIDATE_TIMEOUT_S))
+    return str(reply.get("class_name", ""))
+
+
+def run_custom_strategy_isolated(source: str, params: dict | None,
+                                 data: pd.DataFrame) -> tuple[pd.Series, str]:
+    """Build + run the user's strategy on `data` in a sandbox child.
+    Returns (weights aligned to data.index and clipped to [-1, 1], class name)."""
+    from app.core.config import settings
+
+    _require_enabled()
+    errors = validate_code(source)
+    if errors:
+        raise SandboxError("; ".join(errors))
+    reply = _run_worker({"op": "run", "source": source, "params": dict(params or {}),
+                         "data": data},
+                        float(settings.CUSTOM_STRATEGY_TIMEOUT_S))
+    weights = reply.get("weights")
+    if (not isinstance(weights, list) or len(weights) != len(data)
+            or not all(isinstance(w, (int, float)) and not isinstance(w, bool)
+                       for w in weights)):
+        raise SandboxError("strategy sandbox returned a malformed result")
+    out = pd.Series(np.asarray(weights, dtype=float), index=data.index)
+    return out.fillna(0.0).clip(-1.0, 1.0), str(reply.get("class_name", ""))
+
+
+def probe_sandbox() -> dict:
+    """Diagnostics from inside a sandbox child (env keys, rlimits, which
+    guarded operations are blocked). Never runs user code; used by tests."""
+    from app.core.config import settings
+    return _run_worker({"op": "probe"}, float(settings.CUSTOM_STRATEGY_VALIDATE_TIMEOUT_S))
 
 
 #: shown in the frontend editor as the starting point

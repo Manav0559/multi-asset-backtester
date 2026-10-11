@@ -39,26 +39,45 @@ def strategy_registry(user: User = Depends(get_current_user)) -> dict:
     category, and default params — the frontend renders its strategy picker
     and param forms from this, never from a hardcoded list."""
     from app.backtest.registry import STRATEGY_REGISTRY
-    from app.backtest.sandbox import DEFAULT_TEMPLATE
+    from app.backtest.sandbox import DEFAULT_TEMPLATE, custom_strategies_enabled
 
     catalog = STRATEGY_REGISTRY.catalog()
-    catalog.append({"key": "custom_code", "kind": "single", "category": "custom",
-                    "description": "Your own Python strategy (BYOC sandbox)",
-                    "defaults": {}})
-    return {"strategies": catalog, "custom_template": DEFAULT_TEMPLATE}
+    enabled = custom_strategies_enabled()
+    if enabled:
+        catalog.append({"key": "custom_code", "kind": "single", "category": "custom",
+                        "description": "Your own Python strategy (BYOC sandbox)",
+                        "defaults": {}})
+    return {"strategies": catalog,
+            "custom_template": DEFAULT_TEMPLATE if enabled else "",
+            "custom_strategies_enabled": enabled}
+
+
+def _custom_strategies_forbidden() -> HTTPException:
+    return HTTPException(status.HTTP_403_FORBIDDEN,
+                         "custom strategies are disabled on this deployment")
 
 
 @router.post("/strategies/validate")
 def validate_custom_code(body: dict, user: User = Depends(get_current_user)) -> dict:
-    """Static-check BYOC code without running it — powers the editor's
-    'Validate' button. Instantiation errors count too (bad params, no class)."""
-    from app.backtest.sandbox import SandboxError, build_custom_strategy
+    """Check BYOC code for the editor's 'Validate' button: the static AST gate
+    in-process, then define + instantiate the class inside the isolated
+    sandbox process (class bodies are code). Instantiation errors count too
+    (bad params, no class)."""
+    from app.backtest.sandbox import (
+        SandboxError,
+        check_custom_strategy,
+        custom_strategies_enabled,
+    )
 
+    if not custom_strategies_enabled():
+        raise _custom_strategies_forbidden()
+    params = body.get("params")
     try:
-        strategy = build_custom_strategy(body.get("code", ""), body.get("params"))
+        class_name = check_custom_strategy(
+            body.get("code", ""), params if isinstance(params, dict) else None)
     except SandboxError as exc:
         return {"ok": False, "errors": str(exc).split("; ")}
-    return {"ok": True, "errors": [], "class_name": type(strategy).__name__}
+    return {"ok": True, "errors": [], "class_name": class_name}
 
 
 @router.get("/strategies")
@@ -155,9 +174,15 @@ def submit_backtest(body: BacktestCreate, background: BackgroundTasks,
     if body.strategy == "custom_code":
         # Fail fast at submission: reject code the sandbox would refuse anyway,
         # so the user gets a 422 with line numbers instead of a failed run.
-        from app.backtest.sandbox import SandboxError, build_custom_strategy
+        from app.backtest.sandbox import (
+            SandboxError,
+            check_custom_strategy,
+            custom_strategies_enabled,
+        )
+        if not custom_strategies_enabled():
+            raise _custom_strategies_forbidden()
         try:
-            build_custom_strategy(body.code or "", body.params)
+            check_custom_strategy(body.code or "", body.params)
         except SandboxError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                                 f"custom strategy rejected: {exc}") from exc

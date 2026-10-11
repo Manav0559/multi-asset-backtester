@@ -77,10 +77,18 @@ frontend, which hardcodes nothing.
 **3 · Bring-your-own-code sandbox.** Users submit a Python class
 (`setup()` / `next(i, bar)` / vectorized `generate()`, plus
 `self.indicator("rsi", length=14)`); an AST allowlist rejects imports, dunder
-access, and exec/eval **with line numbers, at submission time**; execution runs
-under curated builtins with a memory rlimit and a hard wall-clock kill, and
-output is clipped to the weight contract. The engine's `shift(1)` applies to
-user code too — lookahead is structurally impossible.
+access, frame introspection, exec/eval, and pandas/numpy file or network functions (`read_*`,
+`to_csv`, `np.load`, `tofile`, ...) **with line numbers, at submission time**.
+User code never runs in the API process: validation and execution each start a
+separate Python process with a minimal environment (no database URL, no JWT
+secret), dropped to an unprivileged user if the server runs as root,
+CPU-time / address-space / file-size / process-count rlimits, an
+audit hook that refuses sockets, subprocesses, file writes and reads outside
+the Python install, and a hard wall-clock timeout that SIGKILLs it. Strategies
+see `pd`/`np` with the I/O functions removed, and output comes back as JSON,
+clipped to the weight contract. The engine's `shift(1)` applies to user code
+too — lookahead is structurally impossible. `CUSTOM_STRATEGIES_ENABLED=false`
+turns the feature off entirely.
 
 **4 · ML.** Seven model families (logistic → XGBoost)
 behind one leakage-hardened pipeline: purged + embargoed walk-forward CV
@@ -129,7 +137,7 @@ Everything runs in **one FastAPI process** — that's the deployment constraint
                    ▼                                  ▼
               FastAPI ─────────────────► in-process asyncio bus (WS fan-out)
                │    │
-               │    ├── BackgroundTasks ── backtest runner (memory/time capped)
+               │    ├── BackgroundTasks ── backtest runner (BYOC code → limited subprocess)
                │    ├── asyncio scheduler ─ equity snapshots · FX refresh ·
                │    │                       daily-bar append · outbox relay ·
                │    │                       reaper · challenge finisher
@@ -243,10 +251,20 @@ point-in-time membership — so the report says so instead of pretending.
   market — chosen so the curve is O(ledger entries) with ONE batched query,
   which lets competition curves replay N portfolios without N+1 price scans.
 - **The BYOC sandbox is defense-in-depth, not a hostile-multitenant jail.**
-  AST allowlist + curated builtins stop accidents and casual abuse; the real
-  fence is the resource-capped runner (memory rlimit, hard timeout). Running
-  truly untrusted code would need gVisor/Firecracker — out of scope for this
-  deployment shape, and documented as such.
+  What the code does (`backend/app/backtest/sandbox.py`,
+  `sandbox_worker.py`): an AST gate and I/O-free `pd`/`np` namespaces in front;
+  then every validate/run happens in a fresh child process with a minimal
+  environment, a throwaway working directory, an unprivileged uid/gid
+  (`nobody`) when the server runs as root, `RLIMIT_CPU` (timeout + 1s),
+  `RLIMIT_AS` (`CUSTOM_STRATEGY_MEMORY_MB`, default 2048), `RLIMIT_FSIZE=0`,
+  `RLIMIT_NPROC=0`, no core dumps, a PEP 578 audit hook blocking network,
+  process creation, file writes and out-of-tree reads, and a wall-clock kill
+  (`CUSTOM_STRATEGY_TIMEOUT_S`, default 60s; `CUSTOM_STRATEGY_VALIDATE_TIMEOUT_S`,
+  default 10s). The rlimits are enforced on Linux (the deployed container);
+  macOS accepts but ignores `RLIMIT_AS`. The child still shares the web
+  container and its network namespace, so truly hostile code
+  would need gVisor/Firecracker — out of scope for this deployment shape. A
+  public demo can set `CUSTOM_STRATEGIES_ENABLED=false`.
 - **Rate limiter fails open.** If the limiter breaks, requests pass unmetered —
   availability over strictness for a trading *simulator*. The invariant that
   must never fail open is the buying-power check, and it runs inside the
@@ -276,4 +294,5 @@ point-in-time membership — so the report says so instead of pretending.
 Everything loads from env / `backend/.env` (`backend/.env.example`). Notable:
 `DATABASE_URL`, `JWT_SECRET`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`,
 `COMMISSION_BPS`, `SLIPPAGE_BPS`, `MAX_LEVERAGE`, `SHORT_MARGIN_REQUIREMENT`,
-`BACKTEST_TIME_LIMIT_S`.
+`BACKTEST_TIME_LIMIT_S`, `CUSTOM_STRATEGIES_ENABLED`, `CUSTOM_STRATEGY_TIMEOUT_S`,
+`CUSTOM_STRATEGY_VALIDATE_TIMEOUT_S`, `CUSTOM_STRATEGY_MEMORY_MB`.

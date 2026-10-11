@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     # actionable 422 instead of OOMing the API minutes later.
     BACKTEST_MAX_WORKING_SET_MB: int = 1024
 
+    # BYOC (user-submitted strategy code). Set CUSTOM_STRATEGIES_ENABLED=false
+    # on a public demo to switch the feature off entirely (registry hides it,
+    # validate/submit return 403). When on, user code only ever runs in a
+    # separate sandbox process with an empty environment, these limits, and a
+    # hard wall-clock kill — see app/backtest/sandbox.py.
+    CUSTOM_STRATEGIES_ENABLED: bool = True
+    CUSTOM_STRATEGY_TIMEOUT_S: float = 60.0           # full run, incl. ~1s start-up
+    CUSTOM_STRATEGY_VALIDATE_TIMEOUT_S: float = 10.0  # define + instantiate only
+    CUSTOM_STRATEGY_MEMORY_MB: int = 2048             # RLIMIT_AS (Linux-enforced)
+
     # WS hub heartbeat: clients treat ~3 missed beats as a dead link (show the
     # banner + force reconnect) and an epoch change as "hub restarted — resync".
     HUB_HEARTBEAT_SECONDS: float = 15.0

@@ -6,10 +6,10 @@ What production taught us, pinned as tests:
   - Order rejection: bad orders come back `rejected` with a reason over HTTP
     and leave the shared cash balance untouched (service-level variants live
     in test_portfolio_ledger; this is the API contract).
-  - Runaway BYOC code: memory caps can't stop a tight loop, so the sandbox
-    denies the amplification primitives outright and the reaper fails any
-    run past BACKTEST_TIME_LIMIT_S (see test_reaper). Actually running a
-    10-minute loop in CI buys nothing extra.
+  - Runaway BYOC code: the AST gate denies the amplification primitives
+    outright; a tight loop is killed by the sandbox process's wall-clock
+    timeout (see test_sandbox_isolation), and the reaper still fails any run
+    past BACKTEST_TIME_LIMIT_S (see test_reaper).
   - Leaderboard with zero (old) snapshots: windowed returns must degrade to
     the all-time baseline, never error or rank on NULL.
 """
