@@ -19,7 +19,24 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# pandas-ta's @njit(cache=True) kernels write their numba cache next to the
+# package source by default; site-packages is root-owned, so as the app user
+# `import pandas_ta` fails ("no locator available") without a writable dir.
+ENV NUMBA_CACHE_DIR=/tmp/numba_cache
+
+# Unprivileged runtime user. Fixed uid/gid so volume ownership is predictable;
+# 10001 stays clear of the distro's system and regular user ranges.
+RUN groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid app --home-dir /home/app --create-home \
+       --shell /usr/sbin/nologin app \
+    && mkdir -p "$NUMBA_CACHE_DIR" \
+    && chown app:app "$NUMBA_CACHE_DIR"
+
+# Source stays root-owned and read-only to the app user: nothing in the app
+# writes under /app at runtime, so the process cannot modify its own code.
 COPY . .
+
+USER app:app
 
 EXPOSE 8000
 
